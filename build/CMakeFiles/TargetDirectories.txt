@@ -1,0 +1,3 @@
+C:/Dev/NppLatexPreview/build/CMakeFiles/NppLatexPreview.dir
+C:/Dev/NppLatexPreview/build/CMakeFiles/edit_cache.dir
+C:/Dev/NppLatexPreview/build/CMakeFiles/rebuild_cache.dir
