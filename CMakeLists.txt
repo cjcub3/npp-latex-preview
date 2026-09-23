@@ -58,6 +58,9 @@ target_link_options(
     PRIVATE
         -static-libgcc
         -static-libstdc++
+        -Wl,-Bstatic
+        -lwinpthread
+        -Wl,-Bdynamic
 )
 
 set_target_properties(
