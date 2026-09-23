@@ -16,6 +16,9 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <fstream>
+#include <sstream>
+#include <cctype>
 
 using Microsoft::WRL::ComPtr;
 
@@ -51,13 +54,28 @@ static const wchar_t MODULE_NAME[] = L"NppLatexPreview.dll";
 constexpr UINT WM_NPP_LATEX_COMPILE_FINISHED =
     WM_APP + 1;
 
+enum class CompileStatus
+{
+    Success,
+    ProcessStartFailed,
+    LatexCompilationFailed,
+    PdfMissing,
+    UnexpectedError
+};
+
 struct CompileResult
 {
-    bool success = false;
+    CompileStatus status = CompileStatus::ProcessStartFailed;
 
     std::wstring texPath;
     std::wstring pdfPath;
+
+    int exitCode = -1;
+
     std::wstring errorMessage;
+    std::wstring logText;
+
+    int errorLine = -1;
 };
 
 static std::thread g_compileThread;
@@ -274,8 +292,9 @@ static bool runLatexPass(
     DWORD& processError
 );
 
-static bool compileLatex(
-    const std::wstring& texPath
+static CompileStatus compileLatex(
+    const std::wstring& texPath,
+    int& exitCode
 );
 
 static std::wstring pathToFileUrl(
@@ -604,56 +623,95 @@ static bool runLatexPass(
 // The working directory is the directory containing the .tex file.
 // -----------------------------------------------------------------------------
 
-static bool compileLatex(
-    const std::wstring& texPath
+enum class ProcessStatus
+{
+    Started,
+    FailedToStart,
+    FailedToGetExitCode
+};
+
+static ProcessStatus runProcess(
+    const std::wstring& commandLine,
+    const std::wstring& workingDirectory,
+    int& exitCode
 )
 {
-    namespace fs = std::filesystem;
+    STARTUPINFOW startupInfo = {};
+    startupInfo.cb = sizeof(startupInfo);
 
-    fs::path texFile(texPath);
+    PROCESS_INFORMATION processInfo = {};
 
+    std::vector<wchar_t> mutableCommandLine(
+        commandLine.begin(),
+        commandLine.end()
+    );
 
-    if (!fs::exists(texFile))
+    mutableCommandLine.push_back(L'\0');
+
+    BOOL created = CreateProcessW(
+        nullptr,
+        mutableCommandLine.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        workingDirectory.c_str(),
+        &startupInfo,
+        &processInfo
+    );
+
+    if (!created)
     {
-        MessageBoxW(
-            nppData._nppHandle,
-            L"The current .tex file does not exist.",
-            PLUGIN_NAME,
-            MB_OK | MB_ICONERROR
-        );
-
-        return false;
+        exitCode = -1;
+        return ProcessStatus::FailedToStart;
     }
 
+    WaitForSingleObject(
+        processInfo.hProcess,
+        INFINITE
+    );
 
-    if (_wcsicmp(
-        texFile.extension().c_str(),
-        L".tex"
-    ) != 0)
-    {
-        MessageBoxW(
-            nppData._nppHandle,
-            L"The current file is not a .tex file.",
-            PLUGIN_NAME,
-            MB_OK | MB_ICONERROR
+    DWORD processExitCode = 0;
+
+    BOOL gotExitCode =
+        GetExitCodeProcess(
+            processInfo.hProcess,
+            &processExitCode
         );
 
-        return false;
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+
+    if (!gotExitCode)
+    {
+        exitCode = -1;
+        return ProcessStatus::FailedToGetExitCode;
     }
 
+    exitCode =
+        static_cast<int>(processExitCode);
 
-    fs::path workingDirectory =
-        texFile.parent_path();
+    return ProcessStatus::Started;
+}
+
+static CompileStatus compileLatex(
+    const std::wstring& texPath,
+    int& exitCode
+)
+{
+    std::filesystem::path texFile(texPath);
+
+    std::wstring workingDirectory =
+        texFile.parent_path().wstring();
 
     std::wstring filename =
         texFile.filename().wstring();
 
+    int firstExitCode = -1;
+    int secondExitCode = -1;
 
-    // -------------------------------------------------------------------------
-    // First pass
-    // -------------------------------------------------------------------------
-
-    std::wstring firstPass =
+    std::wstring firstCommand =
         L"pdflatex.exe "
         L"--shell-escape "
         L"--interaction=nonstopmode "
@@ -661,97 +719,297 @@ static bool compileLatex(
         L"--file-line-error "
         L"\"" + filename + L"\"";
 
+    ProcessStatus firstStatus =
+        runProcess(
+            firstCommand,
+            workingDirectory,
+            firstExitCode
+        );
 
-    DWORD processError = ERROR_SUCCESS;
-
-    if (!runLatexPass(
-        firstPass,
-        workingDirectory.wstring(),
-        processError
-    ))
+    if (firstStatus != ProcessStatus::Started)
     {
-        wchar_t message[512] = {};
-
-        swprintf_s(
-            message,
-            L"First pdflatex pass failed.\n\n"
-            L"Error code: %lu\n\n"
-            L"See the generated .log file for details.",
-            static_cast<unsigned long>(processError)
-        );
-
-        MessageBoxW(
-            nppData._nppHandle,
-            message,
-            PLUGIN_NAME,
-            MB_OK | MB_ICONERROR
-        );
-
-        return false;
+        exitCode = -1;
+        return CompileStatus::ProcessStartFailed;
     }
 
+    if (firstExitCode != 0)
+    {
+        exitCode = firstExitCode;
+        return CompileStatus::LatexCompilationFailed;
+    }
 
-    // -------------------------------------------------------------------------
-    // Second pass
-    // -------------------------------------------------------------------------
-
-    std::wstring secondPass =
+    std::wstring secondCommand =
         L"pdflatex.exe "
         L"--interaction=nonstopmode "
         L"--halt-on-error "
         L"--file-line-error "
         L"\"" + filename + L"\"";
 
+    ProcessStatus secondStatus =
+        runProcess(
+            secondCommand,
+            workingDirectory,
+            secondExitCode
+        );
 
-    processError = ERROR_SUCCESS;
-
-    if (!runLatexPass(
-        secondPass,
-        workingDirectory.wstring(),
-        processError
-    ))
+    if (secondStatus != ProcessStatus::Started)
     {
-        wchar_t message[512] = {};
-
-        swprintf_s(
-            message,
-            L"Second pdflatex pass failed.\n\n"
-            L"Error code: %lu\n\n"
-            L"See the generated .log file for details.",
-            static_cast<unsigned long>(processError)
-        );
-
-        MessageBoxW(
-            nppData._nppHandle,
-            message,
-            PLUGIN_NAME,
-            MB_OK | MB_ICONERROR
-        );
-
-        return false;
+        exitCode = -1;
+        return CompileStatus::ProcessStartFailed;
     }
 
-
-    // -------------------------------------------------------------------------
-    // Check resulting PDF
-    // -------------------------------------------------------------------------
-
-    fs::path pdfPath = texFile;
-    pdfPath.replace_extension(L".pdf");
-
-    if (!fs::exists(pdfPath))
+    if (secondExitCode != 0)
     {
-        MessageBoxW(
-            nppData._nppHandle,
-            L"pdflatex completed, but the expected PDF was not created.",
-            PLUGIN_NAME,
-            MB_OK | MB_ICONERROR
-        );
-
-        return false;
+        exitCode = secondExitCode;
+        return CompileStatus::LatexCompilationFailed;
     }
 
-    return true;
+    exitCode = 0;
+
+    return CompileStatus::Success;
+}
+
+// -----------------------------------------------------------------------------
+// Error Helpers
+// -----------------------------------------------------------------------------
+
+static std::string readTextFile(
+    const std::filesystem::path& path
+)
+{
+    std::ifstream file(
+        path,
+        std::ios::binary
+    );
+
+    if (!file)
+    {
+        return {};
+    }
+
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+
+    return buffer.str();
+}
+
+static void parseLatexError(
+    const std::string& log,
+    std::wstring& errorMessage,
+    int& errorLine
+)
+{
+    errorMessage.clear();
+    errorLine = -1;
+
+    std::istringstream stream(log);
+    std::string line;
+
+    while (std::getline(stream, line))
+    {
+        // Windows text files may leave a '\r' at the end.
+        if (!line.empty() && line.back() == '\r')
+        {
+            line.pop_back();
+        }
+
+        // ---------------------------------------------------------
+        // Format 1:
+        //
+        // test.tex:27: Undefined control sequence.
+        //
+        // This is the format produced by your current MiKTeX run.
+        // ---------------------------------------------------------
+
+        size_t firstColon = line.find(':');
+
+        if (firstColon != std::string::npos)
+        {
+            size_t numberStart = firstColon + 1;
+
+            size_t numberEnd = numberStart;
+
+            while (
+                numberEnd < line.size() &&
+                std::isdigit(
+                    static_cast<unsigned char>(
+                        line[numberEnd]
+                    )
+                )
+            )
+            {
+                ++numberEnd;
+            }
+
+            if (
+                numberEnd > numberStart &&
+                numberEnd < line.size() &&
+                line[numberEnd] == ':'
+            )
+            {
+                try
+                {
+                    int lineNumber =
+                        std::stoi(
+                            line.substr(
+                                numberStart,
+                                numberEnd - numberStart
+                            )
+                        );
+
+                    std::string message =
+                        line.substr(numberEnd + 1);
+
+                    // Remove leading spaces.
+                    size_t first =
+                        message.find_first_not_of(" \t");
+
+                    if (first != std::string::npos)
+                    {
+                        message =
+                            message.substr(first);
+                    }
+
+                    if (!message.empty())
+                    {
+                        errorLine = lineNumber;
+
+                        errorMessage =
+                            std::wstring(
+                                message.begin(),
+                                message.end()
+                            );
+
+                        break;
+                    }
+                }
+                catch (...)
+                {
+                    // Ignore malformed diagnostics.
+                }
+            }
+        }
+
+        // ---------------------------------------------------------
+        // Format 2:
+        //
+        // ! Undefined control sequence.
+        //
+        // followed later by:
+        //
+        // l.27 ...
+        // ---------------------------------------------------------
+
+        if (
+            errorMessage.empty() &&
+            line.rfind("! ", 0) == 0
+        )
+        {
+            std::string message =
+                line.substr(2);
+
+            errorMessage =
+                std::wstring(
+                    message.begin(),
+                    message.end()
+                );
+        }
+
+        if (
+            line.rfind("l.", 0) == 0 &&
+            errorLine == -1
+        )
+        {
+            size_t pos = 2;
+
+            while (
+                pos < line.size() &&
+                std::isdigit(
+                    static_cast<unsigned char>(
+                        line[pos]
+                    )
+                )
+            )
+            {
+                ++pos;
+            }
+
+            if (pos > 2)
+            {
+                try
+                {
+                    errorLine =
+                        std::stoi(
+                            line.substr(
+                                2,
+                                pos - 2
+                            )
+                        );
+                }
+                catch (...)
+                {
+                    errorLine = -1;
+                }
+            }
+        }
+
+        // We have everything we need.
+        if (
+            !errorMessage.empty() &&
+            errorLine != -1
+        )
+        {
+            break;
+        }
+    }
+
+    if (errorMessage.empty())
+    {
+        errorMessage =
+            L"No specific LaTeX error could be identified.";
+    }
+}
+
+static void jumpToLine(int line)
+{
+    if (line < 1)
+        return;
+
+    HWND scintilla = nppData._scintillaMainHandle;
+
+    if (!scintilla)
+        return;
+
+    // LaTeX lines are 1-based; Scintilla lines are 0-based.
+    int scintillaLine = line - 1;
+
+    LRESULT lineCount =
+        SendMessage(
+            scintilla,
+            SCI_GETLINECOUNT,
+            0,
+            0
+        );
+
+    if (scintillaLine >= lineCount)
+        scintillaLine = static_cast<int>(lineCount) - 1;
+
+    if (scintillaLine < 0)
+        return;
+
+    SendMessage(
+        scintilla,
+        SCI_GOTOLINE,
+        scintillaLine,
+        0
+    );
+
+    SendMessage(
+        scintilla,
+        SCI_ENSUREVISIBLE,
+        scintillaLine,
+        0
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -789,26 +1047,71 @@ static void compileWorker(
         // Run your existing synchronous LaTeX compiler.
         // ---------------------------------------------------------
 
-        result->success =
-            compileLatex(texPath);
+        result->status =
+            compileLatex(
+                texPath,
+                result->exitCode
+            );
 
-        if (!result->success)
+        if (result->status ==
+            CompileStatus::LatexCompilationFailed)
         {
-            result->errorMessage =
-                L"LaTeX compilation failed.";
+            std::filesystem::path logPath(texPath);
+            logPath.replace_extension(L".log");
+
+            std::string log =
+                readTextFile(logPath);
+
+            parseLatexError(
+                log,
+                result->errorMessage,
+                result->errorLine
+            );
+
+            result->logText =
+                std::wstring(
+                    log.begin(),
+                    log.end()
+                );
         }
-        else if (!std::filesystem::exists(pdfPath))
+        else if (
+            result->status ==
+            CompileStatus::Success
+        )
         {
-            result->success = false;
+            // TEST ONLY ↓↓↓
+            //if (std::filesystem::exists(pdfPath))
+            //{
+            //    std::filesystem::remove(pdfPath);
+            //}
+            // TEST ONLY ↑↑↑
 
+            if (!std::filesystem::exists(pdfPath))
+            {
+                result->status =
+                    CompileStatus::PdfMissing;
+
+                result->errorMessage =
+                    L"pdflatex completed successfully, "
+                    L"but the expected PDF could not be found.";
+            }
+        }
+        else if (
+            result->status ==
+            CompileStatus::ProcessStartFailed
+        )
+        {
             result->errorMessage =
-                L"pdflatex finished, but the expected PDF "
-                L"could not be found.";
+                L"Could not start pdflatex.exe.\n\n"
+                L"Make sure pdflatex is installed and available "
+                L"on the system PATH.";
         }
     }
     catch (...)
     {
-        result->success = false;
+        result->status = CompileStatus::UnexpectedError;
+
+        result->exitCode = -1;
 
         result->errorMessage =
             L"An unexpected error occurred while compiling LaTeX.";
@@ -1469,18 +1772,47 @@ static LRESULT CALLBACK PanelWndProc(
             // -------------------------------------------------------------------------
             // Compilation failed.
             //
-            // Milestone 7 will replace this generic error with useful information
+            // Milestone 7 replaces this generic error with useful information
             // extracted from the .log file.
             // -------------------------------------------------------------------------
 
-            if (!result->success)
+            if (result->status != CompileStatus::Success)
             {
+                std::wstring message =
+                    result->errorMessage;
+
+                if (
+                    result->status ==
+                    CompileStatus::LatexCompilationFailed
+                )
+                {
+                    message +=
+                        L"\n\nExit code: " +
+                        std::to_wstring(result->exitCode);
+
+                    if (result->errorLine != -1)
+                    {
+                        message +=
+                            L"\nLine: " +
+                            std::to_wstring(result->errorLine);
+                    }
+                }
+
                 MessageBoxW(
                     nppData._nppHandle,
-                    result->errorMessage.c_str(),
+                    message.c_str(),
                     L"LaTeX compilation failed",
                     MB_OK | MB_ICONERROR
                 );
+
+                if (
+                    result->status ==
+                        CompileStatus::LatexCompilationFailed &&
+                    result->errorLine != -1
+                )
+                {
+                    jumpToLine(result->errorLine);
+                }
 
                 return 0;
             }
