@@ -814,11 +814,7 @@ static void parseLatexError(
         }
 
         // ---------------------------------------------------------
-        // Format 1:
-        //
-        // test.tex:27: Undefined control sequence.
-        //
-        // This is the format produced by your current MiKTeX run.
+        // Parse standard filename.tex:lineno: error
         // ---------------------------------------------------------
 
         size_t firstColon = line.find(':');
@@ -891,12 +887,8 @@ static void parseLatexError(
         }
 
         // ---------------------------------------------------------
-        // Format 2:
-        //
         // ! Undefined control sequence.
-        //
-        // followed later by:
-        //
+        // ...
         // l.27 ...
         // ---------------------------------------------------------
 
@@ -980,7 +972,7 @@ static void jumpToLine(int line)
     if (!scintilla)
         return;
 
-    // LaTeX lines are 1-based; Scintilla lines are 0-based.
+    // LaTeX is 1-indexed; Scintilla is 0-indexed.
     int scintillaLine = line - 1;
 
     LRESULT lineCount =
@@ -1036,16 +1028,10 @@ static void compileWorker(
         // ---------------------------------------------------------
         // TEST ONLY:
         // Deliberately delay compilation so that we can verify
-        // that Notepad++ remains responsive.
-        //
-        // Remove this Sleep once async behaviour is confirmed.
+        // that Notepad++ remains responsive (async compilation)
         // ---------------------------------------------------------
 
         // Sleep(5000);
-
-        // ---------------------------------------------------------
-        // Run your existing synchronous LaTeX compiler.
-        // ---------------------------------------------------------
 
         result->status =
             compileLatex(
@@ -1079,7 +1065,7 @@ static void compileWorker(
             CompileStatus::Success
         )
         {
-            // TEST ONLY ↓↓↓
+            // TEST ONLY ↓↓↓ (tests for PdfMissing error)
             //if (std::filesystem::exists(pdfPath))
             //{
             //    std::filesystem::remove(pdfPath);
@@ -1772,8 +1758,8 @@ static LRESULT CALLBACK PanelWndProc(
             // -------------------------------------------------------------------------
             // Compilation failed.
             //
-            // Milestone 7 replaces this generic error with useful information
-            // extracted from the .log file.
+            // Milestone 7 (done) replaces generic error with useful information
+            // parsed from the .log file.
             // -------------------------------------------------------------------------
 
             if (result->status != CompileStatus::Success)
