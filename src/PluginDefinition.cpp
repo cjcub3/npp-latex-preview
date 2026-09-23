@@ -12,6 +12,10 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <thread>
 
 using Microsoft::WRL::ComPtr;
 
@@ -40,6 +44,29 @@ static const wchar_t PANEL_CLASS[] = L"NppLatexPreviewPanel";
 static const wchar_t PANEL_NAME[] = L"LaTeX Preview";
 static const wchar_t MODULE_NAME[] = L"NppLatexPreview.dll";
 
+// -----------------------------------------------------------------------------
+// Asynchronous compilation state
+// -----------------------------------------------------------------------------
+
+constexpr UINT WM_NPP_LATEX_COMPILE_FINISHED =
+    WM_APP + 1;
+
+struct CompileResult
+{
+    bool success = false;
+
+    std::wstring texPath;
+    std::wstring pdfPath;
+    std::wstring errorMessage;
+};
+
+static std::thread g_compileThread;
+
+static std::atomic<bool> g_compileInProgress(false);
+
+static std::mutex g_compileMutex;
+
+static std::unique_ptr<CompileResult> g_pendingCompileResult;
 
 // -----------------------------------------------------------------------------
 // WebView2 IIDs
@@ -257,6 +284,8 @@ static std::wstring pathToFileUrl(
 
 static bool compileAndShowPreview();
 
+static void stopCompileThread();
+
 
 // -----------------------------------------------------------------------------
 // DLL entry point
@@ -318,6 +347,7 @@ void pluginInit()
 
 void pluginCleanup()
 {
+    stopCompileThread();
     g_compileWhenReady = false;
     g_webViewInitializing = false;
 
@@ -724,6 +754,123 @@ static bool compileLatex(
     return true;
 }
 
+// -----------------------------------------------------------------------------
+// Background LaTeX compilation
+// -----------------------------------------------------------------------------
+
+static void compileWorker(
+    std::wstring texPath
+)
+{
+    auto result =
+        std::make_unique<CompileResult>();
+
+    result->texPath = texPath;
+
+    std::filesystem::path pdfPath(texPath);
+    pdfPath.replace_extension(L".pdf");
+
+    result->pdfPath =
+        pdfPath.wstring();
+
+    try
+    {
+        // ---------------------------------------------------------
+        // TEST ONLY:
+        // Deliberately delay compilation so that we can verify
+        // that Notepad++ remains responsive.
+        //
+        // Remove this Sleep once async behaviour is confirmed.
+        // ---------------------------------------------------------
+
+        // Sleep(5000);
+
+        // ---------------------------------------------------------
+        // Run your existing synchronous LaTeX compiler.
+        // ---------------------------------------------------------
+
+        result->success =
+            compileLatex(texPath);
+
+        if (!result->success)
+        {
+            result->errorMessage =
+                L"LaTeX compilation failed.";
+        }
+        else if (!std::filesystem::exists(pdfPath))
+        {
+            result->success = false;
+
+            result->errorMessage =
+                L"pdflatex finished, but the expected PDF "
+                L"could not be found.";
+        }
+    }
+    catch (...)
+    {
+        result->success = false;
+
+        result->errorMessage =
+            L"An unexpected error occurred while compiling LaTeX.";
+    }
+
+    // -------------------------------------------------------------------------
+    // Pass the result back to the UI thread.
+    // -------------------------------------------------------------------------
+
+    {
+        std::lock_guard<std::mutex> lock(
+            g_compileMutex
+        );
+
+        g_pendingCompileResult =
+            std::move(result);
+    }
+
+    // -------------------------------------------------------------------------
+    // Tell the panel window that compilation has finished.
+    //
+    // IMPORTANT:
+    // We do NOT call WebView2 from this worker thread.
+    // -------------------------------------------------------------------------
+
+    if (g_panel != nullptr &&
+        IsWindow(g_panel))
+    {
+        PostMessageW(
+            g_panel,
+            WM_NPP_LATEX_COMPILE_FINISHED,
+            0,
+            0
+        );
+    }
+    else
+    {
+        // No UI window exists anymore.
+        //
+        // The result will be cleaned up by stopCompileThread().
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Stop the compiler thread safely
+// -----------------------------------------------------------------------------
+
+static void stopCompileThread()
+{
+    if (g_compileThread.joinable())
+    {
+        g_compileThread.join();
+    }
+
+    g_compileInProgress = false;
+
+    std::lock_guard<std::mutex> lock(
+        g_compileMutex
+    );
+
+    g_pendingCompileResult.reset();
+}
 
 // -----------------------------------------------------------------------------
 // Convert a Windows path to a file:// URL
@@ -754,7 +901,7 @@ static std::wstring pathToFileUrl(
 
 
 // -----------------------------------------------------------------------------
-// Compile current .tex and display the resulting PDF
+// Start asynchronous compilation
 // -----------------------------------------------------------------------------
 
 static bool compileAndShowPreview()
@@ -771,7 +918,29 @@ static bool compileAndShowPreview()
         return false;
     }
 
-    // Ask Notepad++ to save the current document.
+    // -------------------------------------------------------------------------
+    // Don't allow multiple simultaneous compilations.
+    // -------------------------------------------------------------------------
+
+    bool wasAlreadyCompiling =
+        g_compileInProgress.exchange(true);
+
+    if (wasAlreadyCompiling)
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            L"A LaTeX compilation is already in progress.",
+            PLUGIN_NAME,
+            MB_OK | MB_ICONINFORMATION
+        );
+
+        return false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Save current document.
+    // -------------------------------------------------------------------------
+
     SendMessage(
         nppData._nppHandle,
         NPPM_SAVECURRENTFILE,
@@ -779,11 +948,13 @@ static bool compileAndShowPreview()
         0
     );
 
-    // Get the path after saving.
-    std::wstring texPath = getCurrentFilePath();
+    std::wstring texPath =
+        getCurrentFilePath();
 
     if (texPath.empty())
     {
+        g_compileInProgress = false;
+
         MessageBoxW(
             nppData._nppHandle,
             L"Could not determine the current file path.\n\n"
@@ -795,55 +966,38 @@ static bool compileAndShowPreview()
         return false;
     }
 
-    // Compile.
-    if (!compileLatex(texPath))
-        return false;
+    // -------------------------------------------------------------------------
+    // A previous thread may have finished but not yet been joined.
+    //
+    // Joining it here is effectively instantaneous in that situation.
+    // -------------------------------------------------------------------------
 
-    // Find resulting PDF.
-    std::filesystem::path pdfPath(texPath);
-    pdfPath.replace_extension(L".pdf");
-
-    if (!std::filesystem::exists(pdfPath))
+    if (g_compileThread.joinable())
     {
-        MessageBoxW(
-            nppData._nppHandle,
-            L"The compiled PDF could not be found.",
-            PLUGIN_NAME,
-            MB_OK | MB_ICONERROR
-        );
-
-        return false;
+        g_compileThread.join();
     }
 
-    // Convert PDF path to file:// URL.
-    std::wstring pdfUrl =
-        pathToFileUrl(pdfPath.wstring());
+    // -------------------------------------------------------------------------
+    // Remove any stale result.
+    // -------------------------------------------------------------------------
 
-    if (pdfUrl.empty())
     {
-        MessageBoxW(
-            nppData._nppHandle,
-            L"Could not convert the PDF path to a file URL.",
-            PLUGIN_NAME,
-            MB_OK | MB_ICONERROR
+        std::lock_guard<std::mutex> lock(
+            g_compileMutex
         );
 
-        return false;
+        g_pendingCompileResult.reset();
     }
 
-    HRESULT hr =
-        g_webView->Navigate(pdfUrl.c_str());
+    // -------------------------------------------------------------------------
+    // Start the worker thread.
+    // -------------------------------------------------------------------------
 
-    if (FAILED(hr))
-    {
-        showHresultError(
-            PLUGIN_NAME,
-            L"WebView2 failed to navigate to the PDF.",
-            hr
+    g_compileThread =
+        std::thread(
+            compileWorker,
+            texPath
         );
-
-        return false;
-    }
 
     return true;
 }
@@ -1272,6 +1426,121 @@ static LRESULT CALLBACK PanelWndProc(
             return 0;
         }
 
+        case WM_NPP_LATEX_COMPILE_FINISHED:
+        {
+            std::unique_ptr<CompileResult> result;
+
+            // -------------------------------------------------------------------------
+            // Take ownership of the result produced by the worker thread.
+            // -------------------------------------------------------------------------
+
+            {
+                std::lock_guard<std::mutex> lock(
+                    g_compileMutex
+                );
+
+                result =
+                    std::move(g_pendingCompileResult);
+            }
+
+            if (!result)
+            {
+                g_compileInProgress = false;
+                return 0;
+            }
+
+            // -------------------------------------------------------------------------
+            // Compilation is finished from the user's perspective.
+            // -------------------------------------------------------------------------
+
+            g_compileInProgress = false;
+
+            // -------------------------------------------------------------------------
+            // The worker has already posted the message, so it should be finishing.
+            // Joining here guarantees that the std::thread object is cleaned up
+            // before another compilation can start.
+            // -------------------------------------------------------------------------
+
+            if (g_compileThread.joinable())
+            {
+                g_compileThread.join();
+            }
+
+            // -------------------------------------------------------------------------
+            // Compilation failed.
+            //
+            // Milestone 7 will replace this generic error with useful information
+            // extracted from the .log file.
+            // -------------------------------------------------------------------------
+
+            if (!result->success)
+            {
+                MessageBoxW(
+                    nppData._nppHandle,
+                    result->errorMessage.c_str(),
+                    L"LaTeX compilation failed",
+                    MB_OK | MB_ICONERROR
+                );
+
+                return 0;
+            }
+
+            // -------------------------------------------------------------------------
+            // Convert the generated PDF to a file:// URL.
+            // -------------------------------------------------------------------------
+
+            std::wstring pdfUrl =
+                pathToFileUrl(
+                    result->pdfPath
+                );
+
+            if (pdfUrl.empty())
+            {
+                MessageBoxW(
+                    nppData._nppHandle,
+                    L"Could not convert the PDF path to a file URL.",
+                    PLUGIN_NAME,
+                    MB_OK | MB_ICONERROR
+                );
+
+                return 0;
+            }
+
+            // -------------------------------------------------------------------------
+            // IMPORTANT:
+            //
+            // This is now running on the Notepad++ UI thread, so calling WebView2
+            // here is safe.
+            // -------------------------------------------------------------------------
+
+            if (!g_webView)
+            {
+                MessageBoxW(
+                    nppData._nppHandle,
+                    L"WebView2 is no longer available.",
+                    PLUGIN_NAME,
+                    MB_OK | MB_ICONERROR
+                );
+
+                return 0;
+            }
+
+            HRESULT hr =
+                g_webView->Navigate(
+                    pdfUrl.c_str()
+                );
+
+            if (FAILED(hr))
+            {
+                showHresultError(
+                    PLUGIN_NAME,
+                    L"WebView2 failed to navigate to the PDF.",
+                    hr
+                );
+            }
+
+            return 0;
+        }
 
         case WM_DESTROY:
         {
