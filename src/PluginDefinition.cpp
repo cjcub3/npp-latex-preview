@@ -13,7 +13,6 @@
 #include <utility>
 #include <vector>
 
-
 using Microsoft::WRL::ComPtr;
 
 
