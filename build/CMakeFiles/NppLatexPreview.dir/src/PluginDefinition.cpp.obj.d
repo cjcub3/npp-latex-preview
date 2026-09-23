@@ -325,9 +325,17 @@ CMakeFiles/NppLatexPreview.dir/src/PluginDefinition.cpp.obj: \
  C:/mingw64/lib/gcc/x86_64-w64-mingw32/16.1.0/include/cpuid.h \
  C:/mingw64/x86_64-w64-mingw32/include/wrl/wrappers/corewrappers.h \
  C:/mingw64/x86_64-w64-mingw32/include/intsafe.h \
- C:/mingw64/include/c++/16.1.0/string \
+ C:/Dev/NppLatexPreview/third_party/webview2/include/WebView2.h \
+ C:/mingw64/x86_64-w64-mingw32/include/eventtoken.h \
+ C:/mingw64/x86_64-w64-mingw32/include/shlwapi.h \
+ C:/mingw64/x86_64-w64-mingw32/include/shtypes.h \
+ C:/mingw64/include/c++/16.1.0/filesystem \
+ C:/mingw64/include/c++/16.1.0/bits/fs_fwd.h \
+ C:/mingw64/include/c++/16.1.0/system_error \
+ C:/mingw64/include/c++/16.1.0/x86_64-w64-mingw32/bits/error_constants.h \
+ C:/mingw64/include/c++/16.1.0/cerrno \
+ C:/mingw64/include/c++/16.1.0/iosfwd \
  C:/mingw64/include/c++/16.1.0/bits/stringfwd.h \
- C:/mingw64/include/c++/16.1.0/bits/char_traits.h \
  C:/mingw64/include/c++/16.1.0/bits/postypes.h \
  C:/mingw64/include/c++/16.1.0/cwchar \
  C:/mingw64/x86_64-w64-mingw32/include/wchar.h \
@@ -338,13 +346,20 @@ CMakeFiles/NppLatexPreview.dir/src/PluginDefinition.cpp.obj: \
  C:/mingw64/x86_64-w64-mingw32/include/_mingw_stat64.h \
  C:/mingw64/x86_64-w64-mingw32/include/swprintf.inl \
  C:/mingw64/x86_64-w64-mingw32/include/sec_api/wchar_s.h \
+ C:/mingw64/include/c++/16.1.0/stdexcept \
+ C:/mingw64/include/c++/16.1.0/exception \
+ C:/mingw64/include/c++/16.1.0/bits/exception_ptr.h \
+ C:/mingw64/include/c++/16.1.0/bits/cxxabi_init_exception.h \
+ C:/mingw64/include/c++/16.1.0/typeinfo \
+ C:/mingw64/include/c++/16.1.0/bits/nested_exception.h \
+ C:/mingw64/include/c++/16.1.0/string \
+ C:/mingw64/include/c++/16.1.0/bits/char_traits.h \
  C:/mingw64/include/c++/16.1.0/bits/localefwd.h \
  C:/mingw64/include/c++/16.1.0/x86_64-w64-mingw32/bits/c++locale.h \
  C:/mingw64/include/c++/16.1.0/clocale \
  C:/mingw64/x86_64-w64-mingw32/include/locale.h \
  C:/mingw64/x86_64-w64-mingw32/include/stdio.h \
  C:/mingw64/x86_64-w64-mingw32/include/sec_api/stdio_s.h \
- C:/mingw64/include/c++/16.1.0/iosfwd \
  C:/mingw64/include/c++/16.1.0/cctype \
  C:/mingw64/include/c++/16.1.0/bits/ostream_insert.h \
  C:/mingw64/include/c++/16.1.0/bits/cxxabi_forced.h \
@@ -353,22 +368,84 @@ CMakeFiles/NppLatexPreview.dir/src/PluginDefinition.cpp.obj: \
  C:/mingw64/include/c++/16.1.0/bits/string_view.tcc \
  C:/mingw64/include/c++/16.1.0/ext/string_conversions.h \
  C:/mingw64/include/c++/16.1.0/cstdio \
- C:/mingw64/include/c++/16.1.0/cerrno \
  C:/mingw64/include/c++/16.1.0/bits/charconv.h \
  C:/mingw64/include/c++/16.1.0/bits/basic_string.tcc \
- C:/mingw64/include/c++/16.1.0/functional \
- C:/mingw64/include/c++/16.1.0/bits/refwrap.h \
- C:/mingw64/include/c++/16.1.0/bits/std_function.h \
- C:/mingw64/include/c++/16.1.0/typeinfo \
+ C:/mingw64/include/c++/16.1.0/bits/stdexcept_except.h \
+ C:/mingw64/include/c++/16.1.0/cstdint \
+ C:/mingw64/include/c++/16.1.0/bits/chrono.h \
+ C:/mingw64/include/c++/16.1.0/ratio C:/mingw64/include/c++/16.1.0/limits \
+ C:/mingw64/include/c++/16.1.0/ctime \
+ C:/mingw64/x86_64-w64-mingw32/include/time.h \
+ C:/mingw64/x86_64-w64-mingw32/include/sys/timeb.h \
+ C:/mingw64/x86_64-w64-mingw32/include/sec_api/sys/timeb_s.h \
+ C:/mingw64/x86_64-w64-mingw32/include/_timeval.h \
+ C:/mingw64/x86_64-w64-mingw32/include/pthread_time.h \
+ C:/mingw64/x86_64-w64-mingw32/include/pthread_compat.h \
+ C:/mingw64/include/c++/16.1.0/bits/parse_numbers.h \
+ C:/mingw64/include/c++/16.1.0/bits/fs_path.h \
+ C:/mingw64/include/c++/16.1.0/locale \
+ C:/mingw64/include/c++/16.1.0/bits/locale_classes.h \
  C:/mingw64/include/c++/16.1.0/bits/functexcept.h \
+ C:/mingw64/include/c++/16.1.0/ext/atomicity.h \
+ C:/mingw64/include/c++/16.1.0/x86_64-w64-mingw32/bits/gthr.h \
+ C:/mingw64/include/c++/16.1.0/x86_64-w64-mingw32/bits/gthr-default.h \
+ C:/mingw64/x86_64-w64-mingw32/include/pthread.h \
+ C:/mingw64/x86_64-w64-mingw32/include/sys/types.h \
+ C:/mingw64/x86_64-w64-mingw32/include/process.h \
+ C:/mingw64/x86_64-w64-mingw32/include/corecrt_startup.h \
+ C:/mingw64/x86_64-w64-mingw32/include/signal.h \
+ C:/mingw64/x86_64-w64-mingw32/include/pthread_signal.h \
+ C:/mingw64/x86_64-w64-mingw32/include/sched.h \
+ C:/mingw64/x86_64-w64-mingw32/include/pthread_unistd.h \
+ C:/mingw64/include/c++/16.1.0/x86_64-w64-mingw32/bits/atomic_word.h \
+ C:/mingw64/include/c++/16.1.0/bits/locale_classes.tcc \
+ C:/mingw64/include/c++/16.1.0/bits/locale_facets.h \
+ C:/mingw64/include/c++/16.1.0/cwctype \
+ C:/mingw64/x86_64-w64-mingw32/include/wctype.h \
+ C:/mingw64/include/c++/16.1.0/x86_64-w64-mingw32/bits/ctype_base.h \
+ C:/mingw64/include/c++/16.1.0/bits/ios_base.h \
+ C:/mingw64/include/c++/16.1.0/streambuf \
+ C:/mingw64/include/c++/16.1.0/bits/streambuf.tcc \
+ C:/mingw64/include/c++/16.1.0/bits/streambuf_iterator.h \
+ C:/mingw64/include/c++/16.1.0/x86_64-w64-mingw32/bits/ctype_inline.h \
+ C:/mingw64/include/c++/16.1.0/bits/locale_facets.tcc \
+ C:/mingw64/include/c++/16.1.0/bits/locale_facets_nonio.h \
+ C:/mingw64/include/c++/16.1.0/x86_64-w64-mingw32/bits/time_members.h \
+ C:/mingw64/include/c++/16.1.0/x86_64-w64-mingw32/bits/messages_members.h \
+ C:/mingw64/include/c++/16.1.0/bits/codecvt.h \
+ C:/mingw64/include/c++/16.1.0/bits/locale_facets_nonio.tcc \
+ C:/mingw64/include/c++/16.1.0/bits/locale_conv.h \
+ C:/mingw64/include/c++/16.1.0/iomanip \
+ C:/mingw64/include/c++/16.1.0/bits/quoted_string.h \
+ C:/mingw64/include/c++/16.1.0/sstream \
+ C:/mingw64/include/c++/16.1.0/istream C:/mingw64/include/c++/16.1.0/ios \
+ C:/mingw64/include/c++/16.1.0/bits/basic_ios.h \
+ C:/mingw64/include/c++/16.1.0/bits/basic_ios.tcc \
+ C:/mingw64/include/c++/16.1.0/ostream \
+ C:/mingw64/include/c++/16.1.0/bits/ostream.h \
+ C:/mingw64/include/c++/16.1.0/bits/ostream_print.h \
+ C:/mingw64/include/c++/16.1.0/bits/ostream.tcc \
+ C:/mingw64/include/c++/16.1.0/bits/istream.tcc \
+ C:/mingw64/include/c++/16.1.0/bits/sstream.tcc \
+ C:/mingw64/include/c++/16.1.0/codecvt \
+ C:/mingw64/include/c++/16.1.0/ext/concurrence.h \
+ C:/mingw64/include/c++/16.1.0/bits/shared_ptr.h \
+ C:/mingw64/include/c++/16.1.0/bits/shared_ptr_base.h \
+ C:/mingw64/include/c++/16.1.0/bits/allocated_ptr.h \
+ C:/mingw64/include/c++/16.1.0/bits/refwrap.h \
+ C:/mingw64/include/c++/16.1.0/bits/unique_ptr.h \
+ C:/mingw64/include/c++/16.1.0/ext/aligned_buffer.h \
+ C:/mingw64/include/c++/16.1.0/bits/fs_dir.h \
+ C:/mingw64/include/c++/16.1.0/bits/fs_ops.h \
+ C:/mingw64/include/c++/16.1.0/functional \
+ C:/mingw64/include/c++/16.1.0/bits/std_function.h \
  C:/mingw64/include/c++/16.1.0/unordered_map \
  C:/mingw64/include/c++/16.1.0/bits/unordered_map.h \
  C:/mingw64/include/c++/16.1.0/bits/hashtable.h \
  C:/mingw64/include/c++/16.1.0/bits/hashtable_policy.h \
- C:/mingw64/include/c++/16.1.0/ext/aligned_buffer.h \
  C:/mingw64/include/c++/16.1.0/bits/enable_special_members.h \
  C:/mingw64/include/c++/16.1.0/bits/node_handle.h \
  C:/mingw64/include/c++/16.1.0/array \
  C:/mingw64/include/c++/16.1.0/compare \
- C:/Dev/NppLatexPreview/third_party/webview2/include/WebView2.h \
- C:/mingw64/x86_64-w64-mingw32/include/eventtoken.h
+ C:/mingw64/include/c++/16.1.0/utility \
+ C:/mingw64/include/c++/16.1.0/bits/stl_relops.h

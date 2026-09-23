@@ -2,32 +2,20 @@
 
 #include <windows.h>
 #include <wrl.h>
-#include <string>
-#include <functional>
-#include <new>
 
 #include <WebView2.h>
+#include <shlwapi.h>
+
+#include <filesystem>
+#include <functional>
+#include <new>
+#include <string>
+#include <utility>
+#include <vector>
+
 
 using Microsoft::WRL::ComPtr;
 
-// WebView2 callback interface IIDs.
-// Using explicit IIDs avoids MinGW's unresolved __mingw_uuidof<> symbols.
-
-static const IID IID_WebView2EnvironmentCompletedHandler =
-{
-    0x4E8A3389,
-    0xC9D8,
-    0x4BD2,
-    { 0xB6, 0xB5, 0x12, 0x4F, 0xEE, 0x6C, 0xC1, 0x4D }
-};
-
-static const IID IID_WebView2ControllerCompletedHandler =
-{
-    0x6C4819F3,
-    0xC9B7,
-    0x4260,
-    { 0x81, 0x27, 0xC9, 0xF5, 0xBD, 0xE7, 0xF6, 0x8C }
-};
 
 // -----------------------------------------------------------------------------
 // Global plugin state
@@ -46,18 +34,43 @@ static ComPtr<ICoreWebView2> g_webView;
 static bool g_dockingRegistered = false;
 static bool g_comInitialized = false;
 
+static bool g_webViewInitializing = false;
+static bool g_compileWhenReady = false;
+
 static const wchar_t PANEL_CLASS[] = L"NppLatexPreviewPanel";
 static const wchar_t PANEL_NAME[] = L"LaTeX Preview";
 static const wchar_t MODULE_NAME[] = L"NppLatexPreview.dll";
 
 
 // -----------------------------------------------------------------------------
-// MinGW-compatible WebView2 callback helpers
+// WebView2 IIDs
 //
-// Microsoft's usual WebView2 examples use WRL::Callback<> here.
-// The MinGW environment being used for this project does not provide
-// that helper, so we implement the two required COM callback interfaces
-// directly.
+// MinGW's __uuidof() handling causes a linker problem with these interfaces,
+// so we use the interface IIDs explicitly.
+// -----------------------------------------------------------------------------
+
+static const IID IID_WebView2EnvironmentCompletedHandler =
+{
+    0x4E8A3389,
+    0xC9D8,
+    0x4BD2,
+    { 0xB6, 0xB5, 0x12, 0x4F, 0xEE, 0x6C, 0xC1, 0x4D }
+};
+
+static const IID IID_WebView2ControllerCompletedHandler =
+{
+    0x6C4819F3,
+    0xC9B7,
+    0x4260,
+    { 0x81, 0x27, 0xC9, 0xF5, 0xBD, 0xE7, 0xF6, 0x8C }
+};
+
+
+// -----------------------------------------------------------------------------
+// Simple COM callback implementation.
+//
+// Microsoft::WRL::Callback is unavailable with the MinGW setup being used,
+// so we implement the two WebView2 callback interfaces ourselves.
 // -----------------------------------------------------------------------------
 
 class EnvironmentCompletedHandler final
@@ -90,9 +103,9 @@ public:
             riid == IID_WebView2EnvironmentCompletedHandler)
         {
             *ppvObject =
-                static_cast<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*>(
-                    this
-                );
+                static_cast<
+                    ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*
+                >(this);
 
             AddRef();
             return S_OK;
@@ -164,9 +177,9 @@ public:
             riid == IID_WebView2ControllerCompletedHandler)
         {
             *ppvObject =
-                static_cast<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler*>(
-                    this
-                );
+                static_cast<
+                    ICoreWebView2CreateCoreWebView2ControllerCompletedHandler*
+                >(this);
 
             AddRef();
             return S_OK;
@@ -221,9 +234,29 @@ static LRESULT CALLBACK PanelWndProc(
 
 static bool registerPanelClass();
 static bool createPanel();
+
 static void initializeWebView();
 static void resizeWebView();
 static void shutdownWebView();
+
+static std::wstring getCurrentFilePath();
+static bool saveCurrentFile();
+
+static bool runLatexPass(
+    const std::wstring& commandLine,
+    const std::wstring& workingDirectory,
+    DWORD& processError
+);
+
+static bool compileLatex(
+    const std::wstring& texPath
+);
+
+static std::wstring pathToFileUrl(
+    const std::wstring& path
+);
+
+static bool compileAndShowPreview();
 
 
 // -----------------------------------------------------------------------------
@@ -247,6 +280,34 @@ BOOL WINAPI DllMain(
 
 
 // -----------------------------------------------------------------------------
+// Helper: show an HRESULT
+// -----------------------------------------------------------------------------
+
+static void showHresultError(
+    const wchar_t* title,
+    const wchar_t* prefix,
+    HRESULT hr
+)
+{
+    wchar_t message[512] = {};
+
+    swprintf_s(
+        message,
+        L"%ls\n\nHRESULT: 0x%08lX",
+        prefix,
+        static_cast<unsigned long>(hr)
+    );
+
+    MessageBoxW(
+        nppData._nppHandle,
+        message,
+        title,
+        MB_OK | MB_ICONERROR
+    );
+}
+
+
+// -----------------------------------------------------------------------------
 // Plugin initialization / cleanup
 // -----------------------------------------------------------------------------
 
@@ -258,6 +319,9 @@ void pluginInit()
 
 void pluginCleanup()
 {
+    g_compileWhenReady = false;
+    g_webViewInitializing = false;
+
     if (g_panel != nullptr && IsWindow(g_panel))
     {
         SendMessage(
@@ -337,20 +401,23 @@ static bool createPanel()
     if (g_panel == nullptr)
         return false;
 
-    // Notepad++'s docking manager uses this information to turn
-    // our window into a dockable panel.
-    DockedWidgetData dockData;
+
+    // -------------------------------------------------------------------------
+    // Register with Notepad++ docking manager
+    // -------------------------------------------------------------------------
+
+    DockedWidgetData dockData = {};
 
     dockData.hClient = g_panel;
     dockData.pszName = PANEL_NAME;
 
-    // This corresponds to funcItem[0], which is showPreviewPanel().
+    // Corresponds to funcItem[0].
     dockData.dlgID = 0;
 
-    // Start docked on the right side.
+    // Start on the right side.
     dockData.uMask = DWS_DF_CONT_RIGHT;
 
-    // This MUST be the actual plugin DLL filename.
+    // Actual plugin DLL filename.
     dockData.pszModuleName = MODULE_NAME;
 
     LRESULT registered = SendMessage(
@@ -374,7 +441,417 @@ static bool createPanel()
 
 
 // -----------------------------------------------------------------------------
-// Show panel
+// Get the currently active file path
+// -----------------------------------------------------------------------------
+
+static std::wstring getCurrentFilePath()
+{
+    wchar_t buffer[4096] = {};
+
+    LRESULT result = SendMessage(
+        nppData._nppHandle,
+        NPPM_GETFULLCURRENTPATH,
+        static_cast<WPARAM>(
+            sizeof(buffer) / sizeof(buffer[0])
+        ),
+        reinterpret_cast<LPARAM>(buffer)
+    );
+
+    if (!result)
+        return {};
+
+    return buffer;
+}
+
+
+// -----------------------------------------------------------------------------
+// Save current Notepad++ document
+// -----------------------------------------------------------------------------
+
+static bool saveCurrentFile()
+{
+    SendMessage(
+        nppData._nppHandle,
+        NPPM_SAVECURRENTFILE,
+        0,
+        0
+    );
+
+    return true;
+}
+
+
+// -----------------------------------------------------------------------------
+// Execute one pdflatex pass
+//
+// This is intentionally synchronous for the first working version.
+// Later we can move this to a worker thread so Notepad++ stays responsive.
+// -----------------------------------------------------------------------------
+
+static bool runLatexPass(
+    const std::wstring& commandLine,
+    const std::wstring& workingDirectory,
+    DWORD& processError
+)
+{
+    processError = ERROR_SUCCESS;
+
+    STARTUPINFOW startupInfo = {};
+    startupInfo.cb = sizeof(startupInfo);
+
+    PROCESS_INFORMATION processInfo = {};
+
+    std::vector<wchar_t> mutableCommand(
+        commandLine.begin(),
+        commandLine.end()
+    );
+
+    mutableCommand.push_back(L'\0');
+
+
+    BOOL created = CreateProcessW(
+        nullptr,
+        mutableCommand.data(),
+        nullptr,
+        nullptr,
+        FALSE,
+        CREATE_NO_WINDOW,
+        nullptr,
+        workingDirectory.c_str(),
+        &startupInfo,
+        &processInfo
+    );
+
+    if (!created)
+    {
+        processError = GetLastError();
+        return false;
+    }
+
+
+    WaitForSingleObject(
+        processInfo.hProcess,
+        INFINITE
+    );
+
+
+    DWORD exitCode = 1;
+
+    if (!GetExitCodeProcess(
+        processInfo.hProcess,
+        &exitCode
+    ))
+    {
+        processError = GetLastError();
+
+        CloseHandle(processInfo.hThread);
+        CloseHandle(processInfo.hProcess);
+
+        return false;
+    }
+
+
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+
+    if (exitCode != 0)
+    {
+        processError = exitCode;
+        return false;
+    }
+
+    return true;
+}
+
+
+// -----------------------------------------------------------------------------
+// Compile the .tex file
+//
+// This mirrors the workflow you already use in NppExec:
+//
+//     pdflatex --shell-escape ...
+//     pdflatex ...
+//
+// The working directory is the directory containing the .tex file.
+// -----------------------------------------------------------------------------
+
+static bool compileLatex(
+    const std::wstring& texPath
+)
+{
+    namespace fs = std::filesystem;
+
+    fs::path texFile(texPath);
+
+
+    if (!fs::exists(texFile))
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            L"The current .tex file does not exist.",
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return false;
+    }
+
+
+    if (_wcsicmp(
+        texFile.extension().c_str(),
+        L".tex"
+    ) != 0)
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            L"The current file is not a .tex file.",
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return false;
+    }
+
+
+    fs::path workingDirectory =
+        texFile.parent_path();
+
+    std::wstring filename =
+        texFile.filename().wstring();
+
+
+    // -------------------------------------------------------------------------
+    // First pass
+    // -------------------------------------------------------------------------
+
+    std::wstring firstPass =
+        L"pdflatex.exe "
+        L"--shell-escape "
+        L"--interaction=nonstopmode "
+        L"--halt-on-error "
+        L"--file-line-error "
+        L"\"" + filename + L"\"";
+
+
+    DWORD processError = ERROR_SUCCESS;
+
+    if (!runLatexPass(
+        firstPass,
+        workingDirectory.wstring(),
+        processError
+    ))
+    {
+        wchar_t message[512] = {};
+
+        swprintf_s(
+            message,
+            L"First pdflatex pass failed.\n\n"
+            L"Error code: %lu\n\n"
+            L"See the generated .log file for details.",
+            static_cast<unsigned long>(processError)
+        );
+
+        MessageBoxW(
+            nppData._nppHandle,
+            message,
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return false;
+    }
+
+
+    // -------------------------------------------------------------------------
+    // Second pass
+    // -------------------------------------------------------------------------
+
+    std::wstring secondPass =
+        L"pdflatex.exe "
+        L"--interaction=nonstopmode "
+        L"--halt-on-error "
+        L"--file-line-error "
+        L"\"" + filename + L"\"";
+
+
+    processError = ERROR_SUCCESS;
+
+    if (!runLatexPass(
+        secondPass,
+        workingDirectory.wstring(),
+        processError
+    ))
+    {
+        wchar_t message[512] = {};
+
+        swprintf_s(
+            message,
+            L"Second pdflatex pass failed.\n\n"
+            L"Error code: %lu\n\n"
+            L"See the generated .log file for details.",
+            static_cast<unsigned long>(processError)
+        );
+
+        MessageBoxW(
+            nppData._nppHandle,
+            message,
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return false;
+    }
+
+
+    // -------------------------------------------------------------------------
+    // Check resulting PDF
+    // -------------------------------------------------------------------------
+
+    fs::path pdfPath = texFile;
+    pdfPath.replace_extension(L".pdf");
+
+    if (!fs::exists(pdfPath))
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            L"pdflatex completed, but the expected PDF was not created.",
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return false;
+    }
+
+    return true;
+}
+
+
+// -----------------------------------------------------------------------------
+// Convert a Windows path to a file:// URL
+// -----------------------------------------------------------------------------
+
+static std::wstring pathToFileUrl(
+    const std::wstring& path
+)
+{
+    // Large enough for normal Windows paths plus URL escaping.
+    std::vector<wchar_t> buffer(32768);
+
+    DWORD length =
+        static_cast<DWORD>(buffer.size());
+
+    HRESULT hr = UrlCreateFromPathW(
+        path.c_str(),
+        buffer.data(),
+        &length,
+        0
+    );
+
+    if (FAILED(hr))
+        return {};
+
+    return buffer.data();
+}
+
+
+// -----------------------------------------------------------------------------
+// Compile current .tex and display the resulting PDF
+// -----------------------------------------------------------------------------
+
+static bool compileAndShowPreview()
+{
+    if (!g_webView)
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            L"WebView2 is not ready yet.",
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return false;
+    }
+
+    // Ask Notepad++ to save the current document.
+    SendMessage(
+        nppData._nppHandle,
+        NPPM_SAVECURRENTFILE,
+        0,
+        0
+    );
+
+    // Get the path after saving.
+    std::wstring texPath = getCurrentFilePath();
+
+    if (texPath.empty())
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            L"Could not determine the current file path.\n\n"
+            L"Please save the document as a .tex file first.",
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return false;
+    }
+
+    // Compile.
+    if (!compileLatex(texPath))
+        return false;
+
+    // Find resulting PDF.
+    std::filesystem::path pdfPath(texPath);
+    pdfPath.replace_extension(L".pdf");
+
+    if (!std::filesystem::exists(pdfPath))
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            L"The compiled PDF could not be found.",
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return false;
+    }
+
+    // Convert PDF path to file:// URL.
+    std::wstring pdfUrl =
+        pathToFileUrl(pdfPath.wstring());
+
+    if (pdfUrl.empty())
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            L"Could not convert the PDF path to a file URL.",
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return false;
+    }
+
+    HRESULT hr =
+        g_webView->Navigate(pdfUrl.c_str());
+
+    if (FAILED(hr))
+    {
+        showHresultError(
+            PLUGIN_NAME,
+            L"WebView2 failed to navigate to the PDF.",
+            hr
+        );
+
+        return false;
+    }
+
+    return true;
+}
+
+
+// -----------------------------------------------------------------------------
+// Show the preview panel
 // -----------------------------------------------------------------------------
 
 void showPreviewPanel()
@@ -391,11 +868,18 @@ void showPreviewPanel()
         return;
     }
 
-    // Initialize COM on the Notepad++ UI thread.
+
+    // -------------------------------------------------------------------------
+    // Initialize COM on the Notepad++ UI thread
+    // -------------------------------------------------------------------------
+
     if (!g_comInitialized)
     {
         HRESULT comResult =
-            CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            CoInitializeEx(
+                nullptr,
+                COINIT_APARTMENTTHREADED
+            );
 
         if (SUCCEEDED(comResult))
         {
@@ -414,23 +898,46 @@ void showPreviewPanel()
         }
         else
         {
-            MessageBoxW(
-                nppData._nppHandle,
-                L"CoInitializeEx failed.",
+            showHresultError(
                 PLUGIN_NAME,
-                MB_OK | MB_ICONERROR
+                L"CoInitializeEx failed.",
+                comResult
             );
 
             return;
         }
     }
 
+
+    // -------------------------------------------------------------------------
+    // Initialize WebView2 if necessary
+    // -------------------------------------------------------------------------
+
     if (!g_webView)
     {
-        initializeWebView();
+        if (g_webViewInitializing)
+        {
+            // WebView2 is already being initialized.
+            // The first request will be handled once it becomes ready.
+            g_compileWhenReady = true;
+        }
+        else
+        {
+            g_compileWhenReady = true;
+            initializeWebView();
+        }
+    }
+    else
+    {
+        // WebView2 already exists, so we can compile immediately.
+        compileAndShowPreview();
     }
 
-    // Switch the docking manager to our panel.
+
+    // -------------------------------------------------------------------------
+    // Show the panel
+    // -------------------------------------------------------------------------
+
     SendMessage(
         nppData._nppHandle,
         NPPM_DMMVIEWOTHERTAB,
@@ -446,29 +953,62 @@ void showPreviewPanel()
 
 static void initializeWebView()
 {
-    if (g_panel == nullptr)
+    if (g_panel == nullptr ||
+        !IsWindow(g_panel))
+    {
+        g_compileWhenReady = false;
         return;
-	
-	HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    }
 
-	if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE)
-	{
-		wchar_t message[256];
-		swprintf_s(
-			message,
-			L"CoInitializeEx failed: 0x%08lX",
-			static_cast<unsigned long>(comHr)
-		);
 
-		MessageBox(
-			g_panel,
-			message,
-			L"NppLatexPreview",
-			MB_OK | MB_ICONERROR
-		);
+    if (g_webViewInitializing)
+        return;
 
-		return;
-	}
+
+    g_webViewInitializing = true;
+
+
+    // -------------------------------------------------------------------------
+    // Put WebView2 user data somewhere writable.
+    //
+    // Program Files is not a good location for WebView2 profile data, so use:
+    //
+    // C:\Users\<user>\AppData\Local\NppLatexPreview\WebView2
+    // -------------------------------------------------------------------------
+
+    wchar_t localAppData[MAX_PATH] = {};
+
+    DWORD length = GetEnvironmentVariableW(
+        L"LOCALAPPDATA",
+        localAppData,
+        MAX_PATH
+    );
+
+    if (length == 0 ||
+        length >= MAX_PATH)
+    {
+        g_webViewInitializing = false;
+        g_compileWhenReady = false;
+
+        MessageBoxW(
+            nppData._nppHandle,
+            L"Could not determine LOCALAPPDATA.",
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return;
+    }
+
+
+    std::wstring userDataFolder =
+        std::wstring(localAppData) +
+        L"\\NppLatexPreview\\WebView2";
+
+
+    // -------------------------------------------------------------------------
+    // Environment callback
+    // -------------------------------------------------------------------------
 
     auto* environmentHandler =
         new (std::nothrow) EnvironmentCompletedHandler(
@@ -477,20 +1017,38 @@ static void initializeWebView()
                 ICoreWebView2Environment* environment
             ) -> HRESULT
             {
-                if (FAILED(result) || environment == nullptr)
+                if (FAILED(result) ||
+                    environment == nullptr)
                 {
-                    MessageBoxW(
-                        nppData._nppHandle,
-                        L"Failed to create the WebView2 environment.",
+                    g_webViewInitializing = false;
+                    g_compileWhenReady = false;
+
+                    showHresultError(
                         PLUGIN_NAME,
-                        MB_OK | MB_ICONERROR
+                        L"Failed to create the WebView2 environment.",
+                        FAILED(result)
+                            ? result
+                            : E_FAIL
                     );
 
-                    return FAILED(result) ? result : E_FAIL;
+                    return FAILED(result)
+                        ? result
+                        : E_FAIL;
                 }
 
-                if (g_panel == nullptr || !IsWindow(g_panel))
+
+                if (g_panel == nullptr ||
+                    !IsWindow(g_panel))
+                {
+                    g_webViewInitializing = false;
+                    g_compileWhenReady = false;
                     return S_OK;
+                }
+
+
+                // -----------------------------------------------------------------
+                // Controller callback
+                // -----------------------------------------------------------------
 
                 auto* controllerHandler =
                     new (std::nothrow) ControllerCompletedHandler(
@@ -499,82 +1057,92 @@ static void initializeWebView()
                             ICoreWebView2Controller* controller
                         ) -> HRESULT
                         {
-                            if (FAILED(result) || controller == nullptr)
+                            if (FAILED(result) ||
+                                controller == nullptr)
                             {
-                                MessageBoxW(
-                                    nppData._nppHandle,
-                                    L"Failed to create the WebView2 controller.",
+                                g_webViewInitializing = false;
+                                g_compileWhenReady = false;
+
+                                showHresultError(
                                     PLUGIN_NAME,
-                                    MB_OK | MB_ICONERROR
+                                    L"Failed to create the WebView2 controller.",
+                                    FAILED(result)
+                                        ? result
+                                        : E_FAIL
                                 );
 
-                                return FAILED(result) ? result : E_FAIL;
+                                return FAILED(result)
+                                    ? result
+                                    : E_FAIL;
                             }
 
+
                             g_controller = controller;
+
 
                             HRESULT hr =
                                 controller->get_CoreWebView2(
                                     g_webView.GetAddressOf()
                                 );
 
-                            if (FAILED(hr) || !g_webView)
-                                return FAILED(hr) ? hr : E_FAIL;
+                            if (FAILED(hr) ||
+                                !g_webView)
+                            {
+                                g_webViewInitializing = false;
+                                g_compileWhenReady = false;
+
+                                showHresultError(
+                                    PLUGIN_NAME,
+                                    L"Could not obtain ICoreWebView2.",
+                                    FAILED(hr)
+                                        ? hr
+                                        : E_FAIL
+                                );
+
+                                return FAILED(hr)
+                                    ? hr
+                                    : E_FAIL;
+                            }
+
 
                             controller->put_IsVisible(TRUE);
 
                             resizeWebView();
 
-                            // For now, just display a test page.
-                            // Later this will become the local PDF viewer.
-                            const wchar_t* testHtml =
-                                LR"HTML(
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>NppLatexPreview</title>
-<style>
-    html, body {
-        height: 100%;
-        margin: 0;
-        font-family: Arial, sans-serif;
-        background: #202020;
-        color: #eeeeee;
-    }
 
-    body {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex-direction: column;
-    }
+                            // ---------------------------------------------------------
+                            // WebView2 is now fully ready.
+                            // ---------------------------------------------------------
 
-    h1 {
-        margin-bottom: 12px;
-    }
+                            g_webViewInitializing = false;
 
-    p {
-        color: #bbbbbb;
-    }
-</style>
-</head>
-<body>
-    <h1>NppLatexPreview</h1>
-    <p>WebView2 is working.</p>
-    <p>This panel will eventually display the compiled LaTeX PDF.</p>
-</body>
-</html>
-)HTML";
 
-                            return g_webView->NavigateToString(
-                                testHtml
-                            );
+                            if (g_compileWhenReady)
+                            {
+                                g_compileWhenReady = false;
+
+                                // This performs the first complete milestone:
+                                //
+                                // save .tex
+                                // compile twice
+                                // navigate to resulting PDF
+                                compileAndShowPreview();
+                            }
+
+
+                            return S_OK;
                         }
                     );
 
+
                 if (controllerHandler == nullptr)
+                {
+                    g_webViewInitializing = false;
+                    g_compileWhenReady = false;
+
                     return E_OUTOFMEMORY;
+                }
+
 
                 HRESULT controllerResult =
                     environment->CreateCoreWebView2Controller(
@@ -582,17 +1150,23 @@ static void initializeWebView()
                         controllerHandler
                     );
 
-                // Release our own reference.
-                // The asynchronous WebView2 operation retains the handler
-                // while it needs it.
+
+                // CreateCoreWebView2Controller takes ownership of the
+                // callback reference when appropriate, so release our own
+                // reference.
                 controllerHandler->Release();
+
 
                 return controllerResult;
             }
         );
 
+
     if (environmentHandler == nullptr)
     {
+        g_webViewInitializing = false;
+        g_compileWhenReady = false;
+
         MessageBoxW(
             nppData._nppHandle,
             L"Could not allocate the WebView2 environment callback.",
@@ -603,59 +1177,35 @@ static void initializeWebView()
         return;
     }
 
-    wchar_t localAppData[MAX_PATH];
 
-	DWORD length = GetEnvironmentVariableW(
-		L"LOCALAPPDATA",
-		localAppData,
-		MAX_PATH
-	);
+    // -------------------------------------------------------------------------
+    // Create WebView2 environment
+    // -------------------------------------------------------------------------
 
-	if (length == 0 || length >= MAX_PATH)
-	{
-		MessageBox(
-			g_panel,
-			L"Could not determine LOCALAPPDATA.",
-			L"NppLatexPreview",
-			MB_OK | MB_ICONERROR
-		);
+    HRESULT hr =
+        CreateCoreWebView2EnvironmentWithOptions(
+            nullptr,
+            userDataFolder.c_str(),
+            nullptr,
+            environmentHandler
+        );
 
-		environmentHandler->Release();
-		return;
-	}
 
-	std::wstring userDataFolder =
-		std::wstring(localAppData) +
-		L"\\NppLatexPreview\\WebView2";
+    // We own one reference to the callback.
+    environmentHandler->Release();
 
-	HRESULT hr =
-		CreateCoreWebView2EnvironmentWithOptions(
-			nullptr,
-			userDataFolder.c_str(),
-			nullptr,
-			environmentHandler);
 
-	if (FAILED(hr))
-	{
-		wchar_t message[256];
+    if (FAILED(hr))
+    {
+        g_webViewInitializing = false;
+        g_compileWhenReady = false;
 
-		swprintf_s(
-			message,
-			L"CreateCoreWebView2EnvironmentWithOptions failed.\n\n"
-			L"HRESULT: 0x%08lX",
-			static_cast<unsigned long>(hr)
-		);
-
-		MessageBox(
-			g_panel,
-			message,
-			L"NppLatexPreview",
-			MB_OK | MB_ICONERROR
-		);
-
-		environmentHandler->Release();
-		return;
-	}
+        showHresultError(
+            PLUGIN_NAME,
+            L"CreateCoreWebView2EnvironmentWithOptions failed.",
+            hr
+        );
+    }
 }
 
 
@@ -665,8 +1215,13 @@ static void initializeWebView()
 
 static void resizeWebView()
 {
-    if (!g_controller || !g_panel)
+    if (!g_controller ||
+        !g_panel ||
+        !IsWindow(g_panel))
+    {
         return;
+    }
+
 
     RECT bounds = {};
 
@@ -674,6 +1229,7 @@ static void resizeWebView()
         g_panel,
         &bounds
     );
+
 
     g_controller->put_Bounds(bounds);
 }
@@ -685,6 +1241,9 @@ static void resizeWebView()
 
 static void shutdownWebView()
 {
+    g_webViewInitializing = false;
+    g_compileWhenReady = false;
+
     if (g_controller)
     {
         g_controller->Close();
@@ -714,6 +1273,7 @@ static LRESULT CALLBACK PanelWndProc(
             return 0;
         }
 
+
         case WM_DESTROY:
         {
             shutdownWebView();
@@ -724,9 +1284,11 @@ static LRESULT CALLBACK PanelWndProc(
             return 0;
         }
 
+
         default:
             break;
     }
+
 
     return DefWindowProcW(
         hwnd,
@@ -749,7 +1311,11 @@ void setInfo(NppData notepadPlusData)
 
     pluginInit();
 
-    // The only menu command we currently need.
+
+    // -------------------------------------------------------------------------
+    // Menu command
+    // -------------------------------------------------------------------------
+
     lstrcpyW(
         funcItem[0]._itemName,
         L"Show LaTeX Preview"
@@ -780,9 +1346,17 @@ FuncItem* getFuncsArray(int* nbF)
 
 extern "C"
 __declspec(dllexport)
-void beNotified(SCNotification*)
+void beNotified(SCNotification* notification)
 {
-    // Nothing needed yet.
+    if (notification == nullptr)
+        return;
+
+
+    // Clean up when Notepad++ shuts down.
+    if (notification->nmhdr.code == NPPN_SHUTDOWN)
+    {
+        pluginCleanup();
+    }
 }
 
 

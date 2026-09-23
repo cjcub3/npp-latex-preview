@@ -39,6 +39,7 @@ target_link_libraries(
         "${WEBVIEW2_LIB}"
         ole32
         user32
+        shlwapi
 )
 
 target_compile_definitions(
