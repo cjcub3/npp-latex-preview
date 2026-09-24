@@ -4,8 +4,17 @@
 |  8 | Proper docking (done)			| ⭐⭐⭐⭐⭐	|
 |  9 | Compile automatically on save   	| ⭐⭐⭐⭐⭐	|
 | 10 | Reliable PDF refresh         	|  ⭐⭐⭐⭐ 	|
-| 11 | Zoom/page navigation controls   	|   ⭐⭐⭐ 	|
+| 11 | Useful header				   	|   ⭐⭐⭐ 	|
 | 12 | SyncTeX forward search			| ⭐⭐⭐⭐⭐ 	|
 | 13 | SyncTeX inverse search			| ⭐⭐⭐⭐⭐ 	|
 | 14 | Settings/configuration			|   ⭐⭐⭐		|	
 | 15 | Packaging/install cleanup		|   ⭐⭐⭐		|
+
+11.1	Preview panel header
+11.2	Compilation status display
+11.3	Compile button
+11.4	Auto-compile toggle
+11.5	MessageBox preference
+11.6	Connect CompileResult to unified UI state
+11.7	Test all combinations
+11.8	Persist settings

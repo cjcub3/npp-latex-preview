@@ -48,8 +48,17 @@ static const wchar_t PANEL_CLASS[] = L"NppLatexPreviewPanel";
 static const wchar_t PANEL_NAME[] = L"LaTeX Preview";
 static const wchar_t MODULE_NAME[] = L"NppLatexPreview.dll";
 
+// -----------------------------------------------------------------------------
+// Global Header and Compile Settings
+// -----------------------------------------------------------------------------
+
 static bool g_autoCompile = true;
 // static bool g_compilePending = false;
+
+constexpr int PREVIEW_HEADER_HEIGHT = 36;
+
+static HWND g_previewHeader = nullptr;
+static HWND g_previewStatus = nullptr;
 
 // -----------------------------------------------------------------------------
 // Asynchronous compilation state
@@ -309,6 +318,9 @@ static bool compileAndShowPreview();
 
 static void stopCompileThread();
 
+static void setPreviewStatus(
+    const wchar_t* status
+);
 
 // -----------------------------------------------------------------------------
 // DLL entry point
@@ -453,6 +465,67 @@ static bool createPanel()
     if (g_panel == nullptr)
         return false;
 
+    g_previewHeader =
+        CreateWindowExW(
+            0,
+            L"STATIC",
+            nullptr,
+            WS_CHILD | WS_VISIBLE,
+            0,
+            0,
+            600,
+            PREVIEW_HEADER_HEIGHT,
+            g_panel,
+            nullptr,
+            g_hInstance,
+            nullptr
+        );
+
+    if (g_previewHeader == nullptr)
+    {
+        DestroyWindow(g_panel);
+        g_panel = nullptr;
+        return false;
+    }
+
+    g_previewStatus =
+        CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Ready",
+            WS_CHILD |
+            WS_VISIBLE |
+            SS_LEFT |
+            SS_CENTERIMAGE,
+            12,
+            0,
+            400,
+            PREVIEW_HEADER_HEIGHT,
+            g_previewHeader,
+            nullptr,
+            g_hInstance,
+            nullptr
+        );
+
+    if (g_previewStatus == nullptr)
+    {
+        DestroyWindow(g_panel);
+        g_panel = nullptr;
+        g_previewHeader = nullptr;
+        return false;
+    }
+
+    HFONT font =
+        static_cast<HFONT>(
+            GetStockObject(DEFAULT_GUI_FONT)
+        );
+
+    SendMessage(
+        g_previewStatus,
+        WM_SETFONT,
+        reinterpret_cast<WPARAM>(font),
+        TRUE
+    );
 
     // -------------------------------------------------------------------------
     // Register with Notepad++ docking manager
@@ -1281,6 +1354,7 @@ static bool compileAndShowPreview()
         return false;
     }
 
+    setPreviewStatus(L"Compiling...");
     // -------------------------------------------------------------------------
     // Save current document.
     // -------------------------------------------------------------------------
@@ -1719,7 +1793,6 @@ static void resizeWebView()
         return;
     }
 
-
     RECT bounds = {};
 
     GetClientRect(
@@ -1727,10 +1800,68 @@ static void resizeWebView()
         &bounds
     );
 
+    int width =
+        bounds.right - bounds.left;
 
-    g_controller->put_Bounds(bounds);
+    int height =
+        bounds.bottom - bounds.top;
+
+    if (g_previewHeader)
+    {
+        SetWindowPos(
+            g_previewHeader,
+            nullptr,
+            0,
+            0,
+            width,
+            PREVIEW_HEADER_HEIGHT,
+            SWP_NOZORDER
+        );
+    }
+
+    if (g_previewStatus)
+    {
+        SetWindowPos(
+            g_previewStatus,
+            nullptr,
+            12,
+            0,
+            width - 24,
+            PREVIEW_HEADER_HEIGHT,
+            SWP_NOZORDER
+        );
+    }
+
+    RECT webViewBounds =
+    {
+        0,
+        PREVIEW_HEADER_HEIGHT,
+        width,
+        height
+    };
+
+    g_controller->put_Bounds(
+        webViewBounds
+    );
 }
 
+// -----------------------------------------------------------------------------
+// Other WebView2 Helpers
+// -----------------------------------------------------------------------------
+
+static void setPreviewStatus(
+    const wchar_t* status
+)
+{
+    if (g_previewStatus &&
+        IsWindow(g_previewStatus))
+    {
+        SetWindowTextW(
+            g_previewStatus,
+            status
+        );
+    }
+}
 
 // -----------------------------------------------------------------------------
 // Shut WebView2 down
@@ -1819,6 +1950,39 @@ static LRESULT CALLBACK PanelWndProc(
 
             if (result->status != CompileStatus::Success)
             {
+                switch (result->status)
+                {
+                    case CompileStatus::ProcessStartFailed:
+                        setPreviewStatus(
+                            L"Could not start pdflatex"
+                        );
+                        break;
+
+                    case CompileStatus::LatexCompilationFailed:
+                        setPreviewStatus(
+                            L"Compilation failed"
+                        );
+                        break;
+
+                    case CompileStatus::PdfMissing:
+                        setPreviewStatus(
+                            L"PDF was not generated"
+                        );
+                        break;
+
+                    case CompileStatus::UnexpectedError:
+                        setPreviewStatus(
+                            L"Unexpected compilation error"
+                        );
+                        break;
+
+                    default:
+                        setPreviewStatus(
+                            L"Compilation failed"
+                        );
+                        break;
+                }
+
                 std::wstring message =
                     result->errorMessage;
 
@@ -1869,6 +2033,10 @@ static LRESULT CALLBACK PanelWndProc(
 
             if (pdfUrl.empty())
             {
+                setPreviewStatus(
+                    L"Could not load PDF"
+                );
+
                 MessageBoxW(
                     nppData._nppHandle,
                     L"Could not convert the PDF path to a file URL.",
@@ -1888,6 +2056,10 @@ static LRESULT CALLBACK PanelWndProc(
 
             if (!g_webView)
             {
+                setPreviewStatus(
+                    L"Preview unavailable"
+                );
+
                 MessageBoxW(
                     nppData._nppHandle,
                     L"WebView2 is no longer available.",
@@ -1905,10 +2077,20 @@ static LRESULT CALLBACK PanelWndProc(
 
             if (FAILED(hr))
             {
+                setPreviewStatus(
+                    L"PDF preview failed"
+                );
+
                 showHresultError(
                     PLUGIN_NAME,
                     L"WebView2 failed to navigate to the PDF.",
                     hr
+                );
+            }
+            else
+            {
+                setPreviewStatus(
+                    L"Compiled successfully"
                 );
             }
 
@@ -1918,6 +2100,9 @@ static LRESULT CALLBACK PanelWndProc(
         case WM_DESTROY:
         {
             shutdownWebView();
+
+            g_previewStatus = nullptr;
+            g_previewHeader = nullptr;
 
             g_panel = nullptr;
             g_dockingRegistered = false;
