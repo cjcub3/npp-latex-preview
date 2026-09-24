@@ -10,11 +10,12 @@
 | 14 | Settings/configuration			|   ⭐⭐⭐		|	
 | 15 | Packaging/install cleanup		|   ⭐⭐⭐		|
 
-11.1	Preview panel header
-11.2	Compilation status display
-11.3	Compile button
-11.4	Auto-compile toggle
-11.5	MessageBox preference
-11.6	Connect CompileResult to unified UI state
-11.7	Test all combinations
-11.8	Persist settings
+11.1 Header/status — done
+11.2 Compilation status — done
+11.3 Compile button — mostly done
+11.4 Settings button + settings window
+11.5 Move g_autoCompile and g_showErrorMessages into settings
+11.6 Make settings persistent
+11.7 Polish/test
+11.8 Connect CompileResult to unified UI state
+11.9 Test all combinations
