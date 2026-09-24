@@ -49,7 +49,7 @@ static const wchar_t PANEL_NAME[] = L"LaTeX Preview";
 static const wchar_t MODULE_NAME[] = L"NppLatexPreview.dll";
 
 // -----------------------------------------------------------------------------
-// Global Header and Compile Settings
+// Header Globals and Helpers
 // -----------------------------------------------------------------------------
 
 static bool g_autoCompile = true;
@@ -59,6 +59,145 @@ constexpr int PREVIEW_HEADER_HEIGHT = 36;
 
 static HWND g_previewHeader = nullptr;
 static HWND g_previewStatus = nullptr;
+
+constexpr int IDC_COMPILE_BUTTON = 1001;
+
+static HWND g_compileButton = nullptr;
+static bool g_suppressAutoCompile = false;
+
+// namespace NppDarkMode
+// {
+//     struct Colors
+//     {
+//         COLORREF background = 0;
+//         COLORREF softerBackground = 0;
+//         COLORREF hotBackground = 0;
+//         COLORREF pureBackground = 0;
+//         COLORREF errorBackground = 0;
+//         COLORREF text = 0;
+//         COLORREF darkerText = 0;
+//         COLORREF disabledText = 0;
+//         COLORREF linkText = 0;
+//         COLORREF edge = 0;
+//         COLORREF hotEdge = 0;
+//         COLORREF disabledEdge = 0;
+//     };
+// }
+
+static bool getNppDarkModeColors(
+    NppDarkMode::Colors& colors
+)
+{
+    LRESULT result =
+        SendMessage(
+            nppData._nppHandle,
+            NPPM_GETDARKMODECOLORS,
+            sizeof(NppDarkMode::Colors),
+            reinterpret_cast<LPARAM>(&colors)
+        );
+
+    return result != FALSE;
+}
+
+static HBRUSH g_previewHeaderBrush = nullptr;
+static COLORREF g_previewHeaderColor = GetSysColor(COLOR_WINDOW);
+static COLORREF g_previewTextColor = GetSysColor(COLOR_WINDOWTEXT);
+
+static HBRUSH g_compileButtonBrush = nullptr;
+
+static COLORREF g_compileButtonColor = GetSysColor(COLOR_BTNFACE);
+
+static COLORREF g_compileButtonTextColor = GetSysColor(COLOR_BTNTEXT);
+
+
+static void updatePreviewHeaderTheme()
+{
+    bool darkMode =
+        SendMessage(
+            nppData._nppHandle,
+            NPPM_ISDARKMODEENABLED,
+            0,
+            0
+        ) != FALSE;
+
+    NppDarkMode::Colors colors;
+
+    if (darkMode)
+    {
+        BOOL success =
+            static_cast<BOOL>(
+                SendMessage(
+                    nppData._nppHandle,
+                    NPPM_GETDARKMODECOLORS,
+                    sizeof(colors),
+                    reinterpret_cast<LPARAM>(&colors)
+                )
+            );
+
+        if (success)
+        {
+            g_previewHeaderColor =
+                colors.background;
+
+            g_previewTextColor =
+                colors.text;
+        }
+    }
+    else
+    {
+        g_previewHeaderColor =
+            GetSysColor(COLOR_WINDOW);
+
+        g_previewTextColor =
+            GetSysColor(COLOR_WINDOWTEXT);
+    }
+
+    if (g_previewHeaderBrush)
+    {
+        DeleteObject(g_previewHeaderBrush);
+        g_previewHeaderBrush = nullptr;
+    }
+
+    g_previewHeaderBrush =
+        CreateSolidBrush(g_previewHeaderColor);
+
+    if (g_previewHeader)
+    {
+        InvalidateRect(
+            g_previewHeader,
+            nullptr,
+            TRUE
+        );
+    }
+
+    if (g_previewStatus)
+    {
+        InvalidateRect(
+            g_previewStatus,
+            nullptr,
+            TRUE
+        );
+    }
+
+    g_compileButtonColor =
+        darkMode
+            ? colors.softerBackground
+            : GetSysColor(COLOR_BTNFACE);
+
+    g_compileButtonTextColor =
+        darkMode
+            ? colors.text
+            : GetSysColor(COLOR_BTNTEXT);
+
+    if (g_compileButtonBrush)
+    {
+        DeleteObject(g_compileButtonBrush);
+        g_compileButtonBrush = nullptr;
+    }
+
+    g_compileButtonBrush =
+        CreateSolidBrush(g_compileButtonColor);
+}
 
 // -----------------------------------------------------------------------------
 // Asynchronous compilation state
@@ -322,6 +461,8 @@ static void setPreviewStatus(
     const wchar_t* status
 );
 
+static void updateCompileButton();
+
 // -----------------------------------------------------------------------------
 // DLL entry point
 // -----------------------------------------------------------------------------
@@ -385,6 +526,18 @@ void pluginCleanup()
     stopCompileThread();
     g_compileWhenReady = false;
     g_webViewInitializing = false;
+
+    if (g_previewHeaderBrush)
+    {
+        DeleteObject(g_previewHeaderBrush);
+        g_previewHeaderBrush = nullptr;
+    }
+
+    if (g_compileButtonBrush)
+    {
+        DeleteObject(g_compileButtonBrush);
+        g_compileButtonBrush = nullptr;
+    }
 
     if (g_panel != nullptr && IsWindow(g_panel))
     {
@@ -501,7 +654,7 @@ static bool createPanel()
             0,
             400,
             PREVIEW_HEADER_HEIGHT,
-            g_previewHeader,
+            g_panel,
             nullptr,
             g_hInstance,
             nullptr
@@ -512,6 +665,35 @@ static bool createPanel()
         DestroyWindow(g_panel);
         g_panel = nullptr;
         g_previewHeader = nullptr;
+        return false;
+    }
+
+    g_compileButton =
+        CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Compile",
+            WS_CHILD |
+            WS_VISIBLE |
+            BS_OWNERDRAW,
+            0,
+            0,
+            90,
+            PREVIEW_HEADER_HEIGHT - 8,
+            g_panel,
+            reinterpret_cast<HMENU>(
+                static_cast<INT_PTR>(IDC_COMPILE_BUTTON)
+            ),
+            g_hInstance,
+            nullptr
+        );
+
+    if (g_compileButton == nullptr)
+    {
+        DestroyWindow(g_panel);
+        g_panel = nullptr;
+        g_previewHeader = nullptr;
+        g_previewStatus = nullptr;
         return false;
     }
 
@@ -526,6 +708,8 @@ static bool createPanel()
         reinterpret_cast<WPARAM>(font),
         TRUE
     );
+
+    updatePreviewHeaderTheme();
 
     // -------------------------------------------------------------------------
     // Register with Notepad++ docking manager
@@ -1281,6 +1465,7 @@ static void stopCompileThread()
     }
 
     g_compileInProgress = false;
+    updateCompileButton();
 
     std::lock_guard<std::mutex> lock(
         g_compileMutex
@@ -1335,9 +1520,30 @@ static bool compileAndShowPreview()
         return false;
     }
 
-    // -------------------------------------------------------------------------
-    // Don't allow multiple simultaneous compilations.
-    // -------------------------------------------------------------------------
+    std::wstring texPath =
+        getCurrentFilePath();
+
+    if (texPath.empty())
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            L"Could not determine the current file path.\n\n"
+            L"Please save the document as a .tex file first.",
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return false;
+    }
+
+    if (!isTexFile(texPath))
+    {
+        setPreviewStatus(
+            L"Current file is not a .tex file"
+        );
+
+        return false;
+    }
 
     bool wasAlreadyCompiling =
         g_compileInProgress.exchange(true);
@@ -1354,10 +1560,13 @@ static bool compileAndShowPreview()
         return false;
     }
 
+    updateCompileButton();
     setPreviewStatus(L"Compiling...");
     // -------------------------------------------------------------------------
     // Save current document.
     // -------------------------------------------------------------------------
+
+    g_suppressAutoCompile = true;
 
     SendMessage(
         nppData._nppHandle,
@@ -1366,12 +1575,15 @@ static bool compileAndShowPreview()
         0
     );
 
-    std::wstring texPath =
-        getCurrentFilePath();
+    g_suppressAutoCompile = false;
+
+    // std::wstring texPath =
+    //     getCurrentFilePath();
 
     if (texPath.empty())
     {
         g_compileInProgress = false;
+        updateCompileButton();
 
         MessageBoxW(
             nppData._nppHandle,
@@ -1380,6 +1592,16 @@ static bool compileAndShowPreview()
             PLUGIN_NAME,
             MB_OK | MB_ICONERROR
         );
+
+        return false;
+    }
+
+    if (!isTexFile(texPath))
+    {
+        g_compileInProgress = false;
+        updateCompileButton();
+
+        setPreviewStatus(L"Not a .tex file");
 
         return false;
     }
@@ -1806,6 +2028,9 @@ static void resizeWebView()
     int height =
         bounds.bottom - bounds.top;
 
+    constexpr int BUTTON_WIDTH = 90;
+    constexpr int BUTTON_MARGIN = 8;
+
     if (g_previewHeader)
     {
         SetWindowPos(
@@ -1826,8 +2051,21 @@ static void resizeWebView()
             nullptr,
             12,
             0,
-            width - 24,
+            width - BUTTON_WIDTH - BUTTON_MARGIN - 24,
             PREVIEW_HEADER_HEIGHT,
+            SWP_NOZORDER
+        );
+    }
+
+    if (g_compileButton)
+    {
+        SetWindowPos(
+            g_compileButton,
+            nullptr,
+            width - BUTTON_WIDTH - BUTTON_MARGIN,
+            4,
+            BUTTON_WIDTH,
+            PREVIEW_HEADER_HEIGHT - 8,
             SWP_NOZORDER
         );
     }
@@ -1846,7 +2084,7 @@ static void resizeWebView()
 }
 
 // -----------------------------------------------------------------------------
-// Other WebView2 Helpers
+// Other WebView2 and Header Helpers
 // -----------------------------------------------------------------------------
 
 static void setPreviewStatus(
@@ -1861,6 +2099,20 @@ static void setPreviewStatus(
             status
         );
     }
+}
+
+static void updateCompileButton()
+{
+    if (!g_compileButton ||
+        !IsWindow(g_compileButton))
+    {
+        return;
+    }
+
+    EnableWindow(
+        g_compileButton,
+        g_compileInProgress ? FALSE : TRUE
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -1900,6 +2152,156 @@ static LRESULT CALLBACK PanelWndProc(
             resizeWebView();
             return 0;
         }
+        
+        case WM_CTLCOLORSTATIC:
+        {
+            HDC hdc =
+                reinterpret_cast<HDC>(wParam);
+
+            HWND control =
+                reinterpret_cast<HWND>(lParam);
+
+            if (control == g_previewHeader ||
+                control == g_previewStatus)
+            {
+                SetTextColor(
+                    hdc,
+                    g_previewTextColor
+                );
+
+                SetBkColor(
+                    hdc,
+                    g_previewHeaderColor
+                );
+
+                return reinterpret_cast<LRESULT>(
+                    g_previewHeaderBrush
+                );
+            }
+
+            break;
+        }
+
+        // case WM_CTLCOLORBTN:
+        // {
+        //     HDC hdc =
+        //         reinterpret_cast<HDC>(wParam);
+
+        //     HWND control =
+        //         reinterpret_cast<HWND>(lParam);
+
+        //     if (control == g_compileButton)
+        //     {
+        //         SetTextColor(
+        //             hdc,
+        //             g_compileButtonTextColor
+        //         );
+
+        //         SetBkColor(
+        //             hdc,
+        //             g_compileButtonColor
+        //         );
+
+        //         return reinterpret_cast<LRESULT>(
+        //             g_compileButtonBrush
+        //         );
+        //     }
+
+        //     break;
+        // }
+
+        case WM_DRAWITEM:
+        {
+            DRAWITEMSTRUCT* drawItem =
+                reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+
+            if (
+                drawItem != nullptr &&
+                drawItem->CtlID == IDC_COMPILE_BUTTON
+            )
+            {
+                HDC hdc = drawItem->hDC;
+
+                RECT rect = drawItem->rcItem;
+
+                bool disabled =
+                    (drawItem->itemState & ODS_DISABLED) != 0;
+
+                bool pressed =
+                    (drawItem->itemState & ODS_SELECTED) != 0;
+
+                COLORREF background =
+                    g_compileButtonColor;
+
+                COLORREF textColor =
+                    g_compileButtonTextColor;
+
+                if (disabled)
+                {
+                    textColor =
+                        RGB(
+                            GetRValue(textColor) / 2,
+                            GetGValue(textColor) / 2,
+                            GetBValue(textColor) / 2
+                        );
+                }
+
+                if (pressed)
+                {
+                    background =
+                        g_previewHeaderColor;
+                }
+
+                HBRUSH brush =
+                    CreateSolidBrush(background);
+
+                FillRect(
+                    hdc,
+                    &rect,
+                    brush
+                );
+
+                DeleteObject(brush);
+
+                SetBkMode(
+                    hdc,
+                    TRANSPARENT
+                );
+
+                SetTextColor(
+                    hdc,
+                    textColor
+                );
+
+                DrawTextW(
+                    hdc,
+                    L"Compile",
+                    -1,
+                    &rect,
+                    DT_CENTER |
+                    DT_VCENTER |
+                    DT_SINGLELINE
+                );
+
+                return TRUE;
+            }
+
+            break;
+        }
+
+        case WM_COMMAND:
+        {
+            if (
+                LOWORD(wParam) == IDC_COMPILE_BUTTON &&
+                HIWORD(wParam) == BN_CLICKED
+            )
+            {
+                compileAndShowPreview();
+                return 0;
+            }
+
+            break;
+        }
 
         case WM_NPP_LATEX_COMPILE_FINISHED:
         {
@@ -1921,6 +2323,7 @@ static LRESULT CALLBACK PanelWndProc(
             if (!result)
             {
                 g_compileInProgress = false;
+                updateCompileButton();
                 return 0;
             }
 
@@ -1929,6 +2332,7 @@ static LRESULT CALLBACK PanelWndProc(
             // -------------------------------------------------------------------------
 
             g_compileInProgress = false;
+            updateCompileButton();
 
             // -------------------------------------------------------------------------
             // The worker has already posted the message, so it should be finishing.
@@ -2179,9 +2583,15 @@ void beNotified(SCNotification* notifyCode)
 
     switch (notifyCode->nmhdr.code)
     {
+        case NPPN_DARKMODECHANGED:
+        {
+            updatePreviewHeaderTheme();
+            break;
+        }
+
         case NPPN_FILESAVED:
         {
-            if (!g_autoCompile)
+            if (!g_autoCompile || g_suppressAutoCompile)
                 break;
 
             std::wstring savedPath =
