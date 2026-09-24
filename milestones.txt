@@ -1,11 +1,11 @@
-| M#| Feature                           				|      Priority	   |
-|  6  | Asynchronous LaTeX compilation  	| ⭐⭐⭐⭐⭐ |
-|  7  | Compilation errors/status         		|   ⭐⭐⭐⭐   |
-|  8  | Proper docking (done)					| ⭐⭐⭐⭐⭐ |
-|  9  | Compile automatically on save     	| ⭐⭐⭐⭐⭐ |
-| 10 | Reliable PDF refresh              		|   ⭐⭐⭐⭐   |
-| 11 | Zoom/page navigation controls     	|     ⭐⭐⭐     |
-| 12 | SyncTeX forward search					| ⭐⭐⭐⭐⭐ |
-| 13 | SyncTeX inverse search					| ⭐⭐⭐⭐⭐ |
-| 14 | Settings/configuration					|     ⭐⭐⭐	   |
-| 15 | Packaging/install cleanup				|     ⭐⭐⭐	   |
+| M# | Feature            				|   Priority   	|
+|  6 | Asynchronous LaTeX compilation  	| ⭐⭐⭐⭐⭐	|
+|  7 | Compilation errors/status  		|  ⭐⭐⭐⭐	|
+|  8 | Proper docking (done)			| ⭐⭐⭐⭐⭐	|
+|  9 | Compile automatically on save   	| ⭐⭐⭐⭐⭐	|
+| 10 | Reliable PDF refresh         	|  ⭐⭐⭐⭐ 	|
+| 11 | Zoom/page navigation controls   	|   ⭐⭐⭐ 	|
+| 12 | SyncTeX forward search			| ⭐⭐⭐⭐⭐ 	|
+| 13 | SyncTeX inverse search			| ⭐⭐⭐⭐⭐ 	|
+| 14 | Settings/configuration			|   ⭐⭐⭐		|	
+| 15 | Packaging/install cleanup		|   ⭐⭐⭐		|
