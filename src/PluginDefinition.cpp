@@ -49,40 +49,78 @@ static const wchar_t PANEL_NAME[] = L"LaTeX Preview";
 static const wchar_t MODULE_NAME[] = L"NppLatexPreview.dll";
 
 // -----------------------------------------------------------------------------
-// Header Globals and Helpers
+// Preview header
 // -----------------------------------------------------------------------------
-
-static bool g_autoCompile = true;
-// static bool g_compilePending = false;
 
 constexpr int PREVIEW_HEADER_HEIGHT = 36;
 
+constexpr int IDC_COMPILE_BUTTON  = 1001;
+constexpr int IDC_SETTINGS_BUTTON = 1002;
+
+constexpr int BUTTON_MARGIN          = 8;
+constexpr int COMPILE_BUTTON_WIDTH   = 90;
+constexpr int SETTINGS_BUTTON_WIDTH  = 80;
+constexpr int BUTTON_HEIGHT =
+    PREVIEW_HEADER_HEIGHT - 8;
+
 static HWND g_previewHeader = nullptr;
 static HWND g_previewStatus = nullptr;
-
-constexpr int IDC_COMPILE_BUTTON = 1001;
-
 static HWND g_compileButton = nullptr;
-static bool g_suppressAutoCompile = false;
+static HWND g_settingsButton = nullptr;
 
-// namespace NppDarkMode
-// {
-//     struct Colors
-//     {
-//         COLORREF background = 0;
-//         COLORREF softerBackground = 0;
-//         COLORREF hotBackground = 0;
-//         COLORREF pureBackground = 0;
-//         COLORREF errorBackground = 0;
-//         COLORREF text = 0;
-//         COLORREF darkerText = 0;
-//         COLORREF disabledText = 0;
-//         COLORREF linkText = 0;
-//         COLORREF edge = 0;
-//         COLORREF hotEdge = 0;
-//         COLORREF disabledEdge = 0;
-//     };
-// }
+static HBRUSH g_previewHeaderBrush = nullptr;
+static COLORREF g_previewHeaderColor =
+    GetSysColor(COLOR_WINDOW);
+static COLORREF g_previewTextColor =
+    GetSysColor(COLOR_WINDOWTEXT);
+
+static HBRUSH g_buttonBrush = nullptr;
+static COLORREF g_buttonColor =
+    GetSysColor(COLOR_BTNFACE);
+static COLORREF g_buttonTextColor =
+    GetSysColor(COLOR_BTNTEXT);
+
+
+// -----------------------------------------------------------------------------
+// Default behaviour
+// -----------------------------------------------------------------------------
+
+static bool g_autoCompile = true;
+static bool g_suppressAutoCompile = false;
+static bool g_showErrorMessages = false;
+
+// -----------------------------------------------------------------------------
+// Settings window
+// -----------------------------------------------------------------------------
+
+static const wchar_t SETTINGS_CLASS[] =
+    L"NppLatexPreviewSettings";
+
+constexpr int IDC_AUTO_COMPILE_CHECK  = 2001;
+constexpr int IDC_SHOW_MESSAGES_CHECK = 2002;
+constexpr int IDC_SETTINGS_OK         = 2003;
+constexpr int IDC_SETTINGS_CANCEL     = 2004;
+
+static HWND g_settingsWindow = nullptr;
+
+static HWND g_autoCompileCheck = nullptr;
+static HWND g_showMessagesCheck = nullptr;
+static HWND g_settingsOkButton = nullptr;
+static HWND g_settingsCancelButton = nullptr;
+
+static HBRUSH g_settingsBackgroundBrush = nullptr;
+static COLORREF g_settingsBackgroundColor =
+    GetSysColor(COLOR_WINDOW);
+
+static COLORREF g_settingsTextColor =
+    GetSysColor(COLOR_WINDOWTEXT);
+
+static bool g_autoCompileChecked = false;
+static bool g_showMessagesChecked = false;
+
+// -----------------------------------------------------------------------------
+// Thematic Helpers
+// -----------------------------------------------------------------------------
 
 static bool getNppDarkModeColors(
     NppDarkMode::Colors& colors
@@ -99,17 +137,6 @@ static bool getNppDarkModeColors(
     return result != FALSE;
 }
 
-static HBRUSH g_previewHeaderBrush = nullptr;
-static COLORREF g_previewHeaderColor = GetSysColor(COLOR_WINDOW);
-static COLORREF g_previewTextColor = GetSysColor(COLOR_WINDOWTEXT);
-
-static HBRUSH g_compileButtonBrush = nullptr;
-
-static COLORREF g_compileButtonColor = GetSysColor(COLOR_BTNFACE);
-
-static COLORREF g_compileButtonTextColor = GetSysColor(COLOR_BTNTEXT);
-
-
 static void updatePreviewHeaderTheme()
 {
     bool darkMode =
@@ -122,26 +149,23 @@ static void updatePreviewHeaderTheme()
 
     NppDarkMode::Colors colors;
 
-    if (darkMode)
+    bool haveDarkModeColors =
+        darkMode &&
+        getNppDarkModeColors(colors);
+
+    if (haveDarkModeColors)
     {
-        BOOL success =
-            static_cast<BOOL>(
-                SendMessage(
-                    nppData._nppHandle,
-                    NPPM_GETDARKMODECOLORS,
-                    sizeof(colors),
-                    reinterpret_cast<LPARAM>(&colors)
-                )
-            );
+        g_previewHeaderColor =
+            colors.background;
 
-        if (success)
-        {
-            g_previewHeaderColor =
-                colors.background;
+        g_previewTextColor =
+            colors.text;
 
-            g_previewTextColor =
-                colors.text;
-        }
+        g_buttonColor =
+            colors.softerBackground;
+
+        g_buttonTextColor =
+            colors.text;
     }
     else
     {
@@ -150,6 +174,12 @@ static void updatePreviewHeaderTheme()
 
         g_previewTextColor =
             GetSysColor(COLOR_WINDOWTEXT);
+
+        g_buttonColor =
+            GetSysColor(COLOR_BTNFACE);
+
+        g_buttonTextColor =
+            GetSysColor(COLOR_BTNTEXT);
     }
 
     if (g_previewHeaderBrush)
@@ -160,6 +190,15 @@ static void updatePreviewHeaderTheme()
 
     g_previewHeaderBrush =
         CreateSolidBrush(g_previewHeaderColor);
+
+    if (g_buttonBrush)
+    {
+        DeleteObject(g_buttonBrush);
+        g_buttonBrush = nullptr;
+    }
+
+    g_buttonBrush =
+        CreateSolidBrush(g_buttonColor);
 
     if (g_previewHeader)
     {
@@ -179,24 +218,106 @@ static void updatePreviewHeaderTheme()
         );
     }
 
-    g_compileButtonColor =
-        darkMode
-            ? colors.softerBackground
-            : GetSysColor(COLOR_BTNFACE);
-
-    g_compileButtonTextColor =
-        darkMode
-            ? colors.text
-            : GetSysColor(COLOR_BTNTEXT);
-
-    if (g_compileButtonBrush)
+    if (g_compileButton)
     {
-        DeleteObject(g_compileButtonBrush);
-        g_compileButtonBrush = nullptr;
+        InvalidateRect(
+            g_compileButton,
+            nullptr,
+            TRUE
+        );
+    }
+}
+
+static void updateSettingsTheme()
+{
+    bool darkMode =
+        SendMessage(
+            nppData._nppHandle,
+            NPPM_ISDARKMODEENABLED,
+            0,
+            0
+        ) != FALSE;
+
+    NppDarkMode::Colors colors;
+
+    bool haveDarkModeColors =
+        darkMode &&
+        getNppDarkModeColors(colors);
+
+    if (haveDarkModeColors)
+    {
+        g_settingsBackgroundColor =
+            colors.background;
+
+        g_settingsTextColor =
+            colors.text;
+    }
+    else
+    {
+        g_settingsBackgroundColor =
+            GetSysColor(COLOR_WINDOW);
+
+        g_settingsTextColor =
+            GetSysColor(COLOR_WINDOWTEXT);
     }
 
-    g_compileButtonBrush =
-        CreateSolidBrush(g_compileButtonColor);
+    if (g_settingsBackgroundBrush)
+    {
+        DeleteObject(g_settingsBackgroundBrush);
+        g_settingsBackgroundBrush = nullptr;
+    }
+
+    g_settingsBackgroundBrush =
+        CreateSolidBrush(
+            g_settingsBackgroundColor
+        );
+
+    if (g_settingsWindow)
+    {
+        InvalidateRect(
+            g_settingsWindow,
+            nullptr,
+            TRUE
+        );
+
+        if (g_autoCompileCheck)
+        {
+            InvalidateRect(
+                g_autoCompileCheck,
+                nullptr,
+                TRUE
+            );
+        }
+
+        if (g_showMessagesCheck)
+        {
+            InvalidateRect(
+                g_showMessagesCheck,
+                nullptr,
+                TRUE
+            );
+        }
+
+        if (g_settingsOkButton)
+        {
+            InvalidateRect(
+                g_settingsOkButton,
+                nullptr,
+                TRUE
+            );
+        }
+
+        if (g_settingsCancelButton)
+        {
+            InvalidateRect(
+                g_settingsCancelButton,
+                nullptr,
+                TRUE
+            );
+        }
+
+        UpdateWindow(g_settingsWindow);
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -431,6 +552,16 @@ static LRESULT CALLBACK PanelWndProc(
 static bool registerPanelClass();
 static bool createPanel();
 
+static LRESULT CALLBACK SettingsWndProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam
+);
+
+static bool registerSettingsClass();
+static void showSettingsWindow();
+
 static void initializeWebView();
 static void resizeWebView();
 static void shutdownWebView();
@@ -484,7 +615,7 @@ BOOL WINAPI DllMain(
 
 
 // -----------------------------------------------------------------------------
-// Helper: show an HRESULT
+// Error Messageboxes
 // -----------------------------------------------------------------------------
 
 static void showHresultError(
@@ -501,6 +632,22 @@ static void showHresultError(
         prefix,
         static_cast<unsigned long>(hr)
     );
+
+    MessageBoxW(
+        nppData._nppHandle,
+        message,
+        title,
+        MB_OK | MB_ICONERROR
+    );
+}
+
+static void showCompileError(
+    const wchar_t* title,
+    const wchar_t* message
+)
+{
+    if (!g_showErrorMessages)
+        return;
 
     MessageBoxW(
         nppData._nppHandle,
@@ -533,10 +680,19 @@ void pluginCleanup()
         g_previewHeaderBrush = nullptr;
     }
 
-    if (g_compileButtonBrush)
+    if (g_buttonBrush)
     {
-        DeleteObject(g_compileButtonBrush);
-        g_compileButtonBrush = nullptr;
+        DeleteObject(g_buttonBrush);
+        g_buttonBrush = nullptr;
+    }
+
+    if (
+        g_settingsWindow != nullptr &&
+        IsWindow(g_settingsWindow)
+    )
+    {
+        DestroyWindow(g_settingsWindow);
+        g_settingsWindow = nullptr;
     }
 
     if (g_panel != nullptr && IsWindow(g_panel))
@@ -585,6 +741,355 @@ static bool registerPanelClass()
     return GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
 }
 
+// -----------------------------------------------------------------------------
+// Settings window
+// -----------------------------------------------------------------------------
+
+static bool registerSettingsClass()
+{
+    WNDCLASSW wc = {};
+
+    wc.lpfnWndProc = SettingsWndProc;
+    wc.hInstance = g_hInstance;
+    wc.hCursor = LoadCursorW(
+        nullptr,
+        IDC_ARROW
+    );
+
+    wc.hbrBackground =
+        reinterpret_cast<HBRUSH>(
+            COLOR_WINDOW + 1
+        );
+
+    wc.lpszClassName = SETTINGS_CLASS;
+
+    ATOM atom =
+        RegisterClassW(&wc);
+
+    if (atom != 0)
+        return true;
+
+    return GetLastError() ==
+        ERROR_CLASS_ALREADY_EXISTS;
+}
+
+static void showSettingsWindow()
+{
+    if (
+        g_settingsWindow != nullptr &&
+        IsWindow(g_settingsWindow)
+    )
+    {
+        ShowWindow(
+            g_settingsWindow,
+            SW_SHOWNORMAL
+        );
+
+        SetForegroundWindow(
+            g_settingsWindow
+        );
+
+        return;
+    }
+
+    if (!registerSettingsClass())
+        return;
+
+    updateSettingsTheme();
+
+    g_settingsWindow =
+        CreateWindowExW(
+            WS_EX_DLGMODALFRAME,
+            SETTINGS_CLASS,
+            L"LaTeX Preview Settings",
+            WS_OVERLAPPED |
+            WS_CAPTION |
+            WS_SYSMENU |
+            WS_MINIMIZEBOX,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            520,
+            300,
+            nppData._nppHandle,
+            nullptr,
+            g_hInstance,
+            nullptr
+        );
+
+    if (!g_settingsWindow)
+        return;
+    
+    g_autoCompileChecked = g_autoCompile;
+    g_showMessagesChecked = g_showErrorMessages;
+
+    HFONT font =
+        reinterpret_cast<HFONT>(
+            GetStockObject(DEFAULT_GUI_FONT)
+        );
+
+    // ---------------------------------------------------------
+    // Section label
+    // ---------------------------------------------------------
+
+    HWND compilationLabel =
+        CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Compilation",
+            WS_CHILD |
+            WS_VISIBLE,
+            20,
+            20,
+            150,
+            24,
+            g_settingsWindow,
+            nullptr,
+            g_hInstance,
+            nullptr
+        );
+
+    SendMessage(
+        compilationLabel,
+        WM_SETFONT,
+        reinterpret_cast<WPARAM>(font),
+        TRUE
+    );
+
+    // ---------------------------------------------------------
+    // Auto compile checkbox
+    // ---------------------------------------------------------
+
+    g_autoCompileCheck =
+        CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Compile automatically when the .tex file is saved",
+            WS_CHILD |
+            WS_VISIBLE |
+            WS_TABSTOP |
+            BS_OWNERDRAW,
+            20,
+            48,
+            360,
+            26,
+            g_settingsWindow,
+            reinterpret_cast<HMENU>(
+                static_cast<INT_PTR>(
+                    IDC_AUTO_COMPILE_CHECK
+                )
+            ),
+            g_hInstance,
+            nullptr
+        );
+
+    SendMessage(
+        g_autoCompileCheck,
+        WM_SETFONT,
+        reinterpret_cast<WPARAM>(font),
+        TRUE
+    );
+
+    // ---------------------------------------------------------
+    // Section label
+    // ---------------------------------------------------------
+
+    HWND notificationsLabel =
+        CreateWindowExW(
+            0,
+            L"STATIC",
+            L"Notifications",
+            WS_CHILD |
+            WS_VISIBLE,
+            20,
+            88,
+            150,
+            24,
+            g_settingsWindow,
+            nullptr,
+            g_hInstance,
+            nullptr
+        );
+
+    SendMessage(
+        notificationsLabel,
+        WM_SETFONT,
+        reinterpret_cast<WPARAM>(font),
+        TRUE
+    );
+
+    // ---------------------------------------------------------
+    // Message box checkbox
+    // ---------------------------------------------------------
+
+    g_showMessagesCheck =
+        CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Show compilation error message boxes",
+            WS_CHILD |
+            WS_VISIBLE |
+            WS_TABSTOP |
+            BS_OWNERDRAW,
+            20,
+            116,
+            360,
+            26,
+            g_settingsWindow,
+            reinterpret_cast<HMENU>(
+                static_cast<INT_PTR>(
+                    IDC_SHOW_MESSAGES_CHECK
+                )
+            ),
+            g_hInstance,
+            nullptr
+        );
+
+    SendMessage(
+        g_showMessagesCheck,
+        WM_SETFONT,
+        reinterpret_cast<WPARAM>(font),
+        TRUE
+    );
+
+    // ---------------------------------------------------------
+    // OK
+    // ---------------------------------------------------------
+
+    g_settingsOkButton =
+        CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"OK",
+            WS_CHILD |
+            WS_VISIBLE |
+            BS_OWNERDRAW,
+            0,
+            0,
+            80,
+            28,
+            g_settingsWindow,
+            reinterpret_cast<HMENU>(
+                static_cast<INT_PTR>(
+                    IDC_SETTINGS_OK
+                )
+            ),
+            g_hInstance,
+            nullptr
+        );
+
+    SendMessage(
+        g_settingsOkButton,
+        WM_SETFONT,
+        reinterpret_cast<WPARAM>(font),
+        TRUE
+    );
+
+    SendMessage(
+        nppData._nppHandle,
+        NPPM_DARKMODESUBCLASSANDTHEME,
+        reinterpret_cast<WPARAM>(g_autoCompileCheck),
+        0
+    );
+
+    SendMessage(
+        nppData._nppHandle,
+        NPPM_DARKMODESUBCLASSANDTHEME,
+        reinterpret_cast<WPARAM>(g_showMessagesCheck),
+        0
+    );
+
+    // ---------------------------------------------------------
+    // Cancel
+    // ---------------------------------------------------------
+
+    g_settingsCancelButton =
+        CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Cancel",
+            WS_CHILD |
+            WS_VISIBLE |
+            BS_OWNERDRAW,
+            0,
+            0,
+            80,
+            28,
+            g_settingsWindow,
+            reinterpret_cast<HMENU>(
+                static_cast<INT_PTR>(
+                    IDC_SETTINGS_CANCEL
+                )
+            ),
+            g_hInstance,
+            nullptr
+        );
+
+    SendMessage(
+        g_settingsCancelButton,
+        WM_SETFONT,
+        reinterpret_cast<WPARAM>(font),
+        TRUE
+    );
+
+    RECT clientRect;
+
+    GetClientRect(
+        g_settingsWindow,
+        &clientRect
+    );
+
+    int width =
+        clientRect.right - clientRect.left;
+
+    int height =
+        clientRect.bottom - clientRect.top;
+    
+    constexpr int OKCANCEL_BUTTON_WIDTH = 80;
+    constexpr int OKCANCEL_BUTTON_HEIGHT = 28;
+    constexpr int OKCANCEL_BUTTON_MARGIN = 8;
+
+    SetWindowPos(
+        g_settingsOkButton,
+        nullptr,
+        width -
+            2 * OKCANCEL_BUTTON_WIDTH -
+            OKCANCEL_BUTTON_MARGIN -
+            12,
+        height -
+            OKCANCEL_BUTTON_HEIGHT -
+            12,
+        OKCANCEL_BUTTON_WIDTH,
+        OKCANCEL_BUTTON_HEIGHT,
+        SWP_NOZORDER
+    );
+
+    SetWindowPos(
+        g_settingsCancelButton,
+        nullptr,
+        width -
+            OKCANCEL_BUTTON_WIDTH -
+            12,
+        height -
+            OKCANCEL_BUTTON_HEIGHT -
+            12,
+        OKCANCEL_BUTTON_WIDTH,
+        OKCANCEL_BUTTON_HEIGHT,
+        SWP_NOZORDER
+    );
+
+    ShowWindow(
+        g_settingsWindow,
+        SW_SHOWNORMAL
+    );
+
+    UpdateWindow(
+        g_settingsWindow
+    );
+
+    SetForegroundWindow(
+        g_settingsWindow
+    );
+}
 
 // -----------------------------------------------------------------------------
 // Create the dockable panel
@@ -668,6 +1173,7 @@ static bool createPanel()
         return false;
     }
 
+
     g_compileButton =
         CreateWindowExW(
             0,
@@ -678,7 +1184,7 @@ static bool createPanel()
             BS_OWNERDRAW,
             0,
             0,
-            90,
+            COMPILE_BUTTON_WIDTH,
             PREVIEW_HEADER_HEIGHT - 8,
             g_panel,
             reinterpret_cast<HMENU>(
@@ -696,6 +1202,29 @@ static bool createPanel()
         g_previewStatus = nullptr;
         return false;
     }
+
+
+    g_settingsButton =
+        CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Settings",
+            WS_CHILD |
+            WS_VISIBLE |
+            BS_OWNERDRAW,
+            0,
+            0,
+            SETTINGS_BUTTON_WIDTH,
+            BUTTON_HEIGHT,
+            g_panel,
+            reinterpret_cast<HMENU>(
+                static_cast<INT_PTR>(
+                    IDC_SETTINGS_BUTTON
+                )
+            ),
+            g_hInstance,
+            nullptr
+        );
 
     HFONT font =
         static_cast<HFONT>(
@@ -2028,9 +2557,6 @@ static void resizeWebView()
     int height =
         bounds.bottom - bounds.top;
 
-    constexpr int BUTTON_WIDTH = 90;
-    constexpr int BUTTON_MARGIN = 8;
-
     if (g_previewHeader)
     {
         SetWindowPos(
@@ -2051,8 +2577,25 @@ static void resizeWebView()
             nullptr,
             12,
             0,
-            width - BUTTON_WIDTH - BUTTON_MARGIN - 24,
+            width -
+                SETTINGS_BUTTON_WIDTH -
+                COMPILE_BUTTON_WIDTH -
+                3 * BUTTON_MARGIN -
+                24,
             PREVIEW_HEADER_HEIGHT,
+            SWP_NOZORDER
+        );
+    }
+
+    if (g_settingsButton)
+    {
+        SetWindowPos(
+            g_settingsButton,
+            nullptr,
+            width - SETTINGS_BUTTON_WIDTH - BUTTON_MARGIN,
+            4,
+            SETTINGS_BUTTON_WIDTH,
+            BUTTON_HEIGHT,
             SWP_NOZORDER
         );
     }
@@ -2062,10 +2605,14 @@ static void resizeWebView()
         SetWindowPos(
             g_compileButton,
             nullptr,
-            width - BUTTON_WIDTH - BUTTON_MARGIN,
+            width -
+                SETTINGS_BUTTON_WIDTH -
+                BUTTON_MARGIN -
+                COMPILE_BUTTON_WIDTH -
+                BUTTON_MARGIN,
             4,
-            BUTTON_WIDTH,
-            PREVIEW_HEADER_HEIGHT - 8,
+            COMPILE_BUTTON_WIDTH,
+            BUTTON_HEIGHT,
             SWP_NOZORDER
         );
     }
@@ -2215,13 +2762,15 @@ static LRESULT CALLBACK PanelWndProc(
             DRAWITEMSTRUCT* drawItem =
                 reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
 
+            if (drawItem == nullptr)
+                break;
+
             if (
-                drawItem != nullptr &&
-                drawItem->CtlID == IDC_COMPILE_BUTTON
+                drawItem->CtlID == IDC_COMPILE_BUTTON ||
+                drawItem->CtlID == IDC_SETTINGS_BUTTON
             )
             {
                 HDC hdc = drawItem->hDC;
-
                 RECT rect = drawItem->rcItem;
 
                 bool disabled =
@@ -2231,10 +2780,10 @@ static LRESULT CALLBACK PanelWndProc(
                     (drawItem->itemState & ODS_SELECTED) != 0;
 
                 COLORREF background =
-                    g_compileButtonColor;
+                    g_buttonColor;
 
                 COLORREF textColor =
-                    g_compileButtonTextColor;
+                    g_buttonTextColor;
 
                 if (disabled)
                 {
@@ -2255,27 +2804,21 @@ static LRESULT CALLBACK PanelWndProc(
                 HBRUSH brush =
                     CreateSolidBrush(background);
 
-                FillRect(
-                    hdc,
-                    &rect,
-                    brush
-                );
+                FillRect(hdc, &rect, brush);
 
                 DeleteObject(brush);
 
-                SetBkMode(
-                    hdc,
-                    TRANSPARENT
-                );
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, textColor);
 
-                SetTextColor(
-                    hdc,
-                    textColor
-                );
+                const wchar_t* text =
+                    drawItem->CtlID == IDC_COMPILE_BUTTON
+                        ? L"Compile"
+                        : L"Settings";
 
                 DrawTextW(
                     hdc,
-                    L"Compile",
+                    text,
                     -1,
                     &rect,
                     DT_CENTER |
@@ -2292,11 +2835,22 @@ static LRESULT CALLBACK PanelWndProc(
         case WM_COMMAND:
         {
             if (
-                LOWORD(wParam) == IDC_COMPILE_BUTTON &&
+                LOWORD(wParam) ==
+                    IDC_COMPILE_BUTTON &&
                 HIWORD(wParam) == BN_CLICKED
             )
             {
                 compileAndShowPreview();
+                return 0;
+            }
+
+            if (
+                LOWORD(wParam) ==
+                    IDC_SETTINGS_BUTTON &&
+                HIWORD(wParam) == BN_CLICKED
+            )
+            {
+                showSettingsWindow();
                 return 0;
             }
 
@@ -2407,11 +2961,16 @@ static LRESULT CALLBACK PanelWndProc(
                     }
                 }
 
-                MessageBoxW(
-                    nppData._nppHandle,
-                    message.c_str(),
+                // MessageBoxW(
+                //     nppData._nppHandle,
+                //     message.c_str(),
+                //     L"LaTeX compilation failed",
+                //     MB_OK | MB_ICONERROR
+                // );
+                
+                showCompileError(
                     L"LaTeX compilation failed",
-                    MB_OK | MB_ICONERROR
+                    message.c_str()
                 );
 
                 if (
@@ -2530,6 +3089,574 @@ static LRESULT CALLBACK PanelWndProc(
 
 
 // -----------------------------------------------------------------------------
+// Settings window procedure
+// -----------------------------------------------------------------------------
+
+static LRESULT CALLBACK SettingsWndProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam
+)
+{
+    switch (message)
+    {
+        case WM_ERASEBKGND:
+        {
+            RECT rect;
+
+            GetClientRect(
+                hwnd,
+                &rect
+            );
+
+            FillRect(
+                reinterpret_cast<HDC>(wParam),
+                &rect,
+                g_settingsBackgroundBrush
+            );
+
+            return 1;
+        }
+
+        case WM_CTLCOLORSTATIC:
+        {
+            HDC hdc =
+                reinterpret_cast<HDC>(wParam);
+
+            SetBkMode(
+                hdc,
+                TRANSPARENT
+            );
+
+            SetTextColor(
+                hdc,
+                g_settingsTextColor
+            );
+
+            return reinterpret_cast<LRESULT>(
+                g_settingsBackgroundBrush
+            );
+        }
+
+        case WM_CTLCOLORBTN:
+        {
+            HWND control =
+                reinterpret_cast<HWND>(lParam);
+
+            int controlId =
+                GetDlgCtrlID(control);
+
+            if (
+                controlId != IDC_AUTO_COMPILE_CHECK &&
+                controlId != IDC_SHOW_MESSAGES_CHECK
+            )
+            {
+                break;
+            }
+
+            HDC hdc =
+                reinterpret_cast<HDC>(wParam);
+
+            SetBkMode(
+                hdc,
+                TRANSPARENT
+            );
+
+            SetTextColor(
+                hdc,
+                g_settingsTextColor
+            );
+
+            SetBkColor(
+                hdc,
+                g_settingsBackgroundColor
+            );
+
+            return reinterpret_cast<LRESULT>(
+                g_settingsBackgroundBrush
+            );
+        }
+
+        case WM_DRAWITEM:
+        {
+            DRAWITEMSTRUCT* drawItem =
+                reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+
+            if (drawItem == nullptr)
+                break;
+
+            // -------------------------------------------------
+            // OK / Cancel buttons
+            // -------------------------------------------------
+
+            if (
+                drawItem->CtlID == IDC_SETTINGS_OK ||
+                drawItem->CtlID == IDC_SETTINGS_CANCEL
+            )
+            {
+                HDC hdc = drawItem->hDC;
+                RECT rect = drawItem->rcItem;
+                
+                bool disabled =
+                    (drawItem->itemState & ODS_DISABLED) != 0;
+
+                bool pressed =
+                    (drawItem->itemState & ODS_SELECTED) != 0;
+
+                COLORREF background =
+                    g_buttonColor;
+
+                COLORREF textColor =
+                    g_buttonTextColor;
+
+                if (disabled)
+                {
+                    textColor =
+                        RGB(
+                            GetRValue(textColor) / 2,
+                            GetGValue(textColor) / 2,
+                            GetBValue(textColor) / 2
+                        );
+                }
+
+                if (pressed)
+                {
+                    background =
+                        g_settingsBackgroundColor;
+                }
+
+                HBRUSH brush =
+                    CreateSolidBrush(background);
+
+                FillRect(
+                    hdc,
+                    &rect,
+                    brush
+                );
+
+                DeleteObject(brush);
+
+                SetBkMode(
+                    hdc,
+                    TRANSPARENT
+                );
+
+                SetTextColor(
+                    hdc,
+                    textColor
+                );
+
+                const wchar_t* text =
+                    drawItem->CtlID == IDC_SETTINGS_OK
+                        ? L"OK"
+                        : L"Cancel";
+
+                DrawTextW(
+                    hdc,
+                    text,
+                    -1,
+                    &rect,
+                    DT_CENTER |
+                    DT_VCENTER |
+                    DT_SINGLELINE
+                );
+
+                return TRUE;
+            }
+
+            // -------------------------------------------------
+            // Checkboxes
+            // -------------------------------------------------
+
+            if (
+                drawItem->CtlID == IDC_AUTO_COMPILE_CHECK ||
+                drawItem->CtlID == IDC_SHOW_MESSAGES_CHECK
+            )
+            {
+                // dbg
+                // MessageBoxW(
+                //     hwnd,
+                //     L"Checkbox WM_DRAWITEM received",
+                //     L"Debug",
+                //     MB_OK
+                // );
+
+                HDC hdc = drawItem->hDC;
+                RECT rect = drawItem->rcItem;
+
+                bool checked =
+                    drawItem->CtlID == IDC_AUTO_COMPILE_CHECK
+                        ? g_autoCompileChecked
+                        : g_showMessagesChecked;
+
+                bool disabled =
+                    (drawItem->itemState & ODS_DISABLED) != 0;
+
+                bool pressed =
+                    (drawItem->itemState & ODS_SELECTED) != 0;
+
+                // ---------------------------------------------
+                // Background
+                // ---------------------------------------------
+
+                HBRUSH backgroundBrush =
+                    CreateSolidBrush(
+                        g_settingsBackgroundColor
+                    );
+
+                FillRect(
+                    hdc,
+                    &rect,
+                    backgroundBrush
+                );
+
+                DeleteObject(backgroundBrush);
+
+                // ---------------------------------------------
+                // Checkbox square
+                // ---------------------------------------------
+
+                constexpr int CHECKBOX_SIZE = 16;
+                constexpr int CHECKBOX_MARGIN = 4;
+
+                int checkboxLeft =
+                    rect.left + CHECKBOX_MARGIN;
+
+                int checkboxTop =
+                    rect.top +
+                    (rect.bottom - rect.top - CHECKBOX_SIZE) / 2;
+
+                RECT checkboxRect =
+                {
+                    checkboxLeft,
+                    checkboxTop,
+                    checkboxLeft + CHECKBOX_SIZE,
+                    checkboxTop + CHECKBOX_SIZE
+                };
+
+                COLORREF checkboxBackground =
+                    g_settingsBackgroundColor;
+
+                COLORREF checkboxBorder =
+                    g_settingsTextColor;
+
+                COLORREF checkboxText =
+                    g_settingsTextColor;
+
+                if (pressed)
+                {
+                    checkboxBackground =
+                        g_buttonColor;
+                }
+
+                if (disabled)
+                {
+                    checkboxBorder =
+                        RGB(
+                            GetRValue(checkboxBorder) / 2,
+                            GetGValue(checkboxBorder) / 2,
+                            GetBValue(checkboxBorder) / 2
+                        );
+
+                    checkboxText =
+                        checkboxBorder;
+                }
+
+                HBRUSH checkboxBrush =
+                    CreateSolidBrush(
+                        checkboxBackground
+                    );
+
+                FillRect(
+                    hdc,
+                    &checkboxRect,
+                    checkboxBrush
+                );
+
+                DeleteObject(checkboxBrush);
+
+                // ---------------------------------------------
+                // Checkbox border
+                // ---------------------------------------------
+
+                HPEN borderPen =
+                    CreatePen(
+                        PS_SOLID,
+                        1,
+                        checkboxBorder
+                    );
+
+                HGDIOBJ oldPen =
+                    SelectObject(
+                        hdc,
+                        borderPen
+                    );
+
+                HGDIOBJ oldBrush =
+                    SelectObject(
+                        hdc,
+                        GetStockObject(NULL_BRUSH)
+                    );
+
+                Rectangle(
+                    hdc,
+                    checkboxRect.left,
+                    checkboxRect.top,
+                    checkboxRect.right,
+                    checkboxRect.bottom
+                );
+
+                SelectObject(
+                    hdc,
+                    oldBrush
+                );
+
+                SelectObject(
+                    hdc,
+                    oldPen
+                );
+
+                DeleteObject(borderPen);
+
+                // ---------------------------------------------
+                // Check mark
+                // ---------------------------------------------
+
+                if (checked)
+                {
+                    HPEN checkPen =
+                        CreatePen(
+                            PS_SOLID,
+                            2,
+                            checkboxText
+                        );
+
+                    oldPen =
+                        SelectObject(
+                            hdc,
+                            checkPen
+                        );
+
+                    // Draw:
+                    //
+                    //   \ 
+                    //    \__
+                    //
+                    // as two connected segments.
+
+                    POINT points[3] =
+                    {
+                        {
+                            checkboxRect.left + 3,
+                            checkboxRect.top + 8
+                        },
+                        {
+                            checkboxRect.left + 7,
+                            checkboxRect.top + 12
+                        },
+                        {
+                            checkboxRect.left + 13,
+                            checkboxRect.top + 4
+                        }
+                    };
+
+                    Polyline(
+                        hdc,
+                        points,
+                        3
+                    );
+
+                    SelectObject(
+                        hdc,
+                        oldPen
+                    );
+
+                    DeleteObject(checkPen);
+                }
+
+                // if (checked)
+                // {
+                //     HBRUSH brush =
+                //         CreateSolidBrush(
+                //             RGB(255, 0, 0)
+                //         );
+
+                //     RECT r =
+                //     {
+                //         checkboxRect.left + 4,
+                //         checkboxRect.top + 4,
+                //         checkboxRect.right - 4,
+                //         checkboxRect.bottom - 4
+                //     };
+
+                //     FillRect(
+                //         hdc,
+                //         &r,
+                //         brush
+                //     );
+
+                //     DeleteObject(brush);
+                // }
+
+                // ---------------------------------------------
+                // Checkbox text
+                // ---------------------------------------------
+
+                const wchar_t* text =
+                    drawItem->CtlID ==
+                        IDC_AUTO_COMPILE_CHECK
+                        ? L"Compile automatically when the .tex file is saved"
+                        : L"Show compilation error message boxes";
+
+                RECT textRect = rect;
+
+                textRect.left =
+                    checkboxRect.right + 8;
+
+                SetBkMode(
+                    hdc,
+                    TRANSPARENT
+                );
+
+                SetTextColor(
+                    hdc,
+                    checkboxText
+                );
+
+                DrawTextW(
+                    hdc,
+                    text,
+                    -1,
+                    &textRect,
+                    DT_LEFT |
+                    DT_VCENTER |
+                    DT_SINGLELINE
+                );
+
+                return TRUE;
+                
+                // dbg
+                // HBRUSH redBrush =
+                //     CreateSolidBrush(RGB(255, 0, 0));
+
+                // FillRect(
+                //     hdc,
+                //     &rect,
+                //     redBrush
+                // );
+
+                // DeleteObject(redBrush);
+
+                // return TRUE;
+            }
+
+            break;
+        }
+
+        case WM_COMMAND:
+        {
+            int controlId =
+                LOWORD(wParam);
+
+            int notificationCode =
+                HIWORD(wParam);
+
+            if (
+                notificationCode == BN_CLICKED &&
+                controlId == IDC_AUTO_COMPILE_CHECK
+            )
+            {
+                g_autoCompileChecked =
+                    !g_autoCompileChecked;
+
+                InvalidateRect(
+                    g_autoCompileCheck,
+                    nullptr,
+                    TRUE
+                );
+
+                UpdateWindow(
+                    g_autoCompileCheck
+                );
+
+                return 0;
+            }
+
+            if (
+                notificationCode == BN_CLICKED &&
+                controlId == IDC_SHOW_MESSAGES_CHECK
+            )
+            {
+                g_showMessagesChecked =
+                    !g_showMessagesChecked;
+
+                InvalidateRect(
+                    g_showMessagesCheck,
+                    nullptr,
+                    TRUE
+                );
+
+                UpdateWindow(
+                    g_showMessagesCheck
+                );
+
+                return 0;
+            }
+
+            if (controlId == IDC_SETTINGS_OK)
+            {
+                // Apply temporary settings
+                g_autoCompile =
+                    g_autoCompileChecked;
+
+                g_showErrorMessages =
+                    g_showMessagesChecked;
+
+                DestroyWindow(hwnd);
+                return 0;
+            }
+
+            if (controlId == IDC_SETTINGS_CANCEL)
+            {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+
+            break;
+        }
+
+        case WM_CLOSE:
+        {
+            DestroyWindow(hwnd);
+            return 0;
+        }
+
+        case WM_DESTROY:
+        {
+            g_settingsWindow = nullptr;
+
+            g_autoCompileCheck = nullptr;
+            g_showMessagesCheck = nullptr;
+            g_settingsOkButton = nullptr;
+            g_settingsCancelButton = nullptr;
+
+            return 0;
+        }
+
+        default:
+            break;
+    }
+
+    return DefWindowProcW(
+        hwnd,
+        message,
+        wParam,
+        lParam
+    );
+}
+
+// -----------------------------------------------------------------------------
 // Notepad++ plugin interface
 // -----------------------------------------------------------------------------
 
@@ -2586,6 +3713,12 @@ void beNotified(SCNotification* notifyCode)
         case NPPN_DARKMODECHANGED:
         {
             updatePreviewHeaderTheme();
+
+            if (g_settingsWindow)
+            {
+                updateSettingsTheme();
+            }
+
             break;
         }
 
