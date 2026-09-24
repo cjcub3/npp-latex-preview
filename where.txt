@@ -1,8 +1,3 @@
-C:\Users\parent>where gcc
 C:\MinGW\bin\gcc.exe
-
-C:\Users\parent>where g++
 C:\MinGW\bin\g++.exe
-
-C:\Users\parent>where cmake
 C:\Program Files\CMake\bin\cmake.exe
