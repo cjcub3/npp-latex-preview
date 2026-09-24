@@ -1,3 +1,0 @@
-"C:\Program Files\CMake\bin\cmake.exe" -E rm -f CMakeFiles\NppLatexPreview.dir/objects.a
-C:\mingw64\bin\ar.exe qc CMakeFiles\NppLatexPreview.dir/objects.a @CMakeFiles\NppLatexPreview.dir\objects1.rsp
-C:\mingw64\bin\g++.exe -shared -static-libgcc -static-libstdc++ -o plugin\NppLatexPreview.dll -Wl,--out-implib,libNppLatexPreview.dll.a -Wl,--major-image-version,0,--minor-image-version,0 -Wl,--whole-archive CMakeFiles\NppLatexPreview.dir/objects.a -Wl,--no-whole-archive @CMakeFiles\NppLatexPreview.dir\linkLibs.rsp
