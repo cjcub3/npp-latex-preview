@@ -19,6 +19,7 @@
 #include <fstream>
 #include <sstream>
 #include <cctype>
+#include <cwctype>
 
 using Microsoft::WRL::ComPtr;
 
@@ -46,6 +47,9 @@ static bool g_compileWhenReady = false;
 static const wchar_t PANEL_CLASS[] = L"NppLatexPreviewPanel";
 static const wchar_t PANEL_NAME[] = L"LaTeX Preview";
 static const wchar_t MODULE_NAME[] = L"NppLatexPreview.dll";
+
+static bool g_autoCompile = true;
+// static bool g_compilePending = false;
 
 // -----------------------------------------------------------------------------
 // Asynchronous compilation state
@@ -511,9 +515,45 @@ static std::wstring getCurrentFilePath()
     return buffer;
 }
 
+static std::wstring getFilePathFromBufferId(
+    uptr_t bufferId
+)
+{
+    if (bufferId == 0)
+        return {};
+
+    int length = static_cast<int>(
+        SendMessage(
+            nppData._nppHandle,
+            NPPM_GETFULLPATHFROMBUFFERID,
+            bufferId,
+            0
+        )
+    );
+
+    if (length <= 0)
+        return {};
+
+    std::wstring path(
+        static_cast<size_t>(length),
+        L'\0'
+    );
+
+    SendMessage(
+        nppData._nppHandle,
+        NPPM_GETFULLPATHFROMBUFFERID,
+        bufferId,
+        reinterpret_cast<LPARAM>(
+            path.data()
+        )
+    );
+
+    return path;
+}
+
 
 // -----------------------------------------------------------------------------
-// Save current Notepad++ document
+// Notepad++ document helpers
 // -----------------------------------------------------------------------------
 
 static bool saveCurrentFile()
@@ -528,6 +568,21 @@ static bool saveCurrentFile()
     return true;
 }
 
+static bool isTexFile(const std::wstring& path)
+{
+    if (path.size() < 4)
+        return false;
+
+    std::wstring extension =
+        path.substr(path.size() - 4);
+
+    for (wchar_t& c : extension)
+    {
+        c = static_cast<wchar_t>(towlower(c));
+    }
+
+    return extension == L".tex";
+}
 
 // -----------------------------------------------------------------------------
 // Execute one pdflatex pass
@@ -1932,16 +1987,48 @@ FuncItem* getFuncsArray(int* nbF)
 
 extern "C"
 __declspec(dllexport)
-void beNotified(SCNotification* notification)
+void beNotified(SCNotification* notifyCode)
 {
-    if (notification == nullptr)
+    if (notifyCode == nullptr)
         return;
 
-
-    // Clean up when Notepad++ shuts down.
-    if (notification->nmhdr.code == NPPN_SHUTDOWN)
+    switch (notifyCode->nmhdr.code)
     {
-        pluginCleanup();
+        case NPPN_FILESAVED:
+        {
+            if (!g_autoCompile)
+                break;
+
+            std::wstring savedPath =
+                getFilePathFromBufferId(
+                    notifyCode->nmhdr.idFrom
+                );
+                
+
+            if (savedPath.empty())
+                break;
+
+            if (!isTexFile(savedPath))
+                break;
+
+            // Only compile if this is the document
+            // currently being previewed/edited.
+            std::wstring currentPath =
+                getCurrentFilePath();
+
+            if (currentPath.empty() ||
+                savedPath != currentPath)
+            {
+                break;
+            }
+
+            compileAndShowPreview();
+
+            break;
+        }
+
+        default:
+            break;
     }
 }
 
