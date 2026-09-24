@@ -742,8 +742,102 @@ static bool registerPanelClass()
 }
 
 // -----------------------------------------------------------------------------
-// Settings window
+// Settings
 // -----------------------------------------------------------------------------
+
+static std::filesystem::path getSettingsPath()
+{
+    wchar_t appData[MAX_PATH];
+
+    DWORD length =
+        GetEnvironmentVariableW(
+            L"APPDATA",
+            appData,
+            MAX_PATH
+        );
+
+    if (length == 0 || length >= MAX_PATH)
+    {
+        return {};
+    }
+
+    std::filesystem::path directory =
+        std::filesystem::path(appData) /
+        L"NppLatexPreview";
+
+    std::error_code error;
+
+    std::filesystem::create_directories(
+        directory,
+        error
+    );
+
+    if (error)
+    {
+        return {};
+    }
+
+    return directory / L"settings.ini";
+}
+
+static void loadSettings()
+{
+    std::filesystem::path path =
+        getSettingsPath();
+
+    if (path.empty())
+        return;
+
+    std::ifstream file(path);
+
+    if (!file)
+        return;
+
+    std::string line;
+
+    while (std::getline(file, line))
+    {
+        if (line == "AutoCompile=1")
+        {
+            g_autoCompile = true;
+        }
+        else if (line == "AutoCompile=0")
+        {
+            g_autoCompile = false;
+        }
+        else if (line == "ShowErrorMessages=1")
+        {
+            g_showErrorMessages = true;
+        }
+        else if (line == "ShowErrorMessages=0")
+        {
+            g_showErrorMessages = false;
+        }
+    }
+}
+
+static void saveSettings()
+{
+    std::filesystem::path path =
+        getSettingsPath();
+
+    if (path.empty())
+        return;
+
+    std::ofstream file(path);
+
+    if (!file)
+        return;
+
+    file << "[Settings]\n";
+    file << "AutoCompile="
+         << (g_autoCompile ? 1 : 0)
+         << "\n";
+
+    file << "ShowErrorMessages="
+         << (g_showErrorMessages ? 1 : 0)
+         << "\n";
+}
 
 static bool registerSettingsClass()
 {
@@ -3606,12 +3700,13 @@ static LRESULT CALLBACK SettingsWndProc(
 
             if (controlId == IDC_SETTINGS_OK)
             {
-                // Apply temporary settings
                 g_autoCompile =
                     g_autoCompileChecked;
 
                 g_showErrorMessages =
                     g_showMessagesChecked;
+                
+                saveSettings();
 
                 DestroyWindow(hwnd);
                 return 0;
@@ -3665,6 +3760,8 @@ __declspec(dllexport)
 void setInfo(NppData notepadPlusData)
 {
     nppData = notepadPlusData;
+
+    loadSettings();
 
     pluginInit();
 
