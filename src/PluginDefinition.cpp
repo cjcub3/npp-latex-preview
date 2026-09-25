@@ -24,7 +24,6 @@
 
 using Microsoft::WRL::ComPtr;
 
-
 // -----------------------------------------------------------------------------
 // Global plugin state
 // -----------------------------------------------------------------------------
@@ -89,6 +88,7 @@ static COLORREF g_buttonTextColor =
 static bool g_autoCompile = true;
 static bool g_suppressAutoCompile = false;
 static bool g_showErrorMessages = false;
+static int g_previewNavigationId = 0;
 
 // -----------------------------------------------------------------------------
 // Settings window
@@ -1373,6 +1373,120 @@ static bool createPanel()
     return true;
 }
 
+
+// -----------------------------------------------------------------------------
+// SyncTeX
+// -----------------------------------------------------------------------------
+
+// static void testSyncTeX()
+// {
+//     std::wstring texPath =
+//         getCurrentFilePath();
+
+//     if (texPath.empty())
+//     {
+//         MessageBoxW(
+//             nppData._nppHandle,
+//             L"No current file.",
+//             PLUGIN_NAME,
+//             MB_OK | MB_ICONERROR
+//         );
+
+//         return;
+//     }
+
+//     std::filesystem::path pdfPath(texPath);
+//     pdfPath.replace_extension(L".pdf");
+
+//     if (!std::filesystem::exists(pdfPath))
+//     {
+//         MessageBoxW(
+//             nppData._nppHandle,
+//             L"The corresponding PDF does not exist.",
+//             PLUGIN_NAME,
+//             MB_OK | MB_ICONERROR
+//         );
+
+//         return;
+//     }
+
+//     HWND scintilla =
+//         nppData._scintillaMainHandle;
+
+//     LRESULT position =
+//         SendMessage(
+//             scintilla,
+//             SCI_GETCURRENTPOS,
+//             0,
+//             0
+//         );
+
+//     LRESULT line =
+//         SendMessage(
+//             scintilla,
+//             SCI_LINEFROMPOSITION,
+//             position,
+//             0
+//         );
+
+//     LRESULT column =
+//         SendMessage(
+//             scintilla,
+//             SCI_GETCOLUMN,
+//             position,
+//             0
+//         );
+
+//     SyncTeXLocation location;
+
+//     bool found =
+//         syncTeXForwardSearch(
+//             pdfPath.wstring(),
+//             texPath,
+//             static_cast<int>(line) + 1,
+//             static_cast<int>(column),
+//             location
+//         );
+
+//     if (!found)
+//     {
+//         MessageBoxW(
+//             nppData._nppHandle,
+//             L"SyncTeX could not find a corresponding PDF location.",
+//             PLUGIN_NAME,
+//             MB_OK | MB_ICONINFORMATION
+//         );
+
+//         return;
+//     }
+
+//     std::wstring message =
+//         L"Source line: " +
+//         std::to_wstring(
+//             static_cast<int>(line) + 1
+//         ) +
+//         L"\n"
+//         L"Source column: " +
+//         std::to_wstring(
+//             static_cast<int>(column)
+//         ) +
+//         L"\n\n"
+//         L"PDF page: " +
+//         std::to_wstring(location.page) +
+//         L"\n"
+//         L"PDF X: " +
+//         std::to_wstring(location.x) +
+//         L"\n"
+//         L"PDF Y: " +
+//         std::to_wstring(location.y);
+
+//     MessageBoxW(
+//         nppData._nppHandle,
+//         message.c_str(),
+//         L"SyncTeX Test",
+//         MB_OK
+//     );
+// }
 
 // -----------------------------------------------------------------------------
 // Get the currently active file path
@@ -3171,6 +3285,69 @@ static LRESULT CALLBACK PanelWndProc(
 
                 return 0;
             }
+            
+            // -------------------------------------------------------------------------
+            // Try to use SyncTeX to determine which PDF page corresponds to the
+            // current source cursor position.
+            // -------------------------------------------------------------------------
+
+            int targetPage = 1;
+
+            // Get the current cursor position from Scintilla.
+            HWND scintilla = nppData._scintillaMainHandle;
+
+            LRESULT position =
+                SendMessage(
+                    scintilla,
+                    SCI_GETCURRENTPOS,
+                    0,
+                    0
+                );
+
+            LRESULT line =
+                SendMessage(
+                    scintilla,
+                    SCI_LINEFROMPOSITION,
+                    position,
+                    0
+                );
+
+            LRESULT column =
+                SendMessage(
+                    scintilla,
+                    SCI_GETCOLUMN,
+                    position,
+                    0
+                );
+
+            // SyncTeX uses 1-based source line numbers.
+            SyncTeXLocation location;
+
+            if (syncTeXForwardSearch(
+                    result->pdfPath,
+                    result->texPath,
+                    static_cast<int>(line) + 1,
+                    static_cast<int>(column),
+                    location))
+            {
+                targetPage = location.page;
+            }
+
+            ++g_previewNavigationId;
+
+            pdfUrl += L"?preview=";
+            pdfUrl += std::to_wstring(g_previewNavigationId);
+
+            pdfUrl += L"#page=";
+            pdfUrl += std::to_wstring(targetPage);
+            
+            //dbg
+            // MessageBoxW(
+            //     nppData._nppHandle,
+            //     pdfUrl.c_str(),
+            //     L"PDF URL",
+            //     MB_OK
+            // );
 
             HRESULT hr =
                 g_webView->Navigate(
@@ -3823,6 +4000,14 @@ void setInfo(NppData notepadPlusData)
     funcItem[0]._pFunc = showPreviewPanel;
     funcItem[0]._init2Check = false;
     funcItem[0]._pShKey = nullptr;
+
+    // lstrcpyW(
+    //     funcItem[1]._itemName,
+    //     L"Test SyncTeX" // Your new menu text
+    // );
+    // funcItem[1]._pFunc = testSyncTeX;
+    // funcItem[1]._init2Check = false;
+    // funcItem[1]._pShKey = nullptr;
 }
 
 

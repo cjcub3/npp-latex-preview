@@ -49,8 +49,44 @@ static std::string wideToUtf8(
     return result;
 }
 
+static std::wstring utf8ToWide(
+    const char* value
+)
+{
+    if (value == nullptr || *value == '\0')
+        return {};
+
+    int size =
+        MultiByteToWideChar(
+            CP_UTF8,
+            0,
+            value,
+            -1,
+            nullptr,
+            0
+        );
+
+    if (size <= 1)
+        return {};
+
+    std::wstring result(
+        static_cast<size_t>(size - 1),
+        L'\0'
+    );
+
+    MultiByteToWideChar(
+        CP_UTF8,
+        0,
+        value,
+        -1,
+        result.data(),
+        size
+    );
+
+    return result;
+}
+
 bool syncTeXForwardSearch(
-    const std::wstring& synctexPath,
     const std::wstring& pdfPath,
     const std::wstring& texPath,
     int line,
@@ -121,6 +157,17 @@ bool syncTeXForwardSearch(
 
     location.y =
         synctex_node_box_visible_v(node);
+
+    location.sourceFile =
+        utf8ToWide(
+            synctex_node_get_name(node)
+        );
+
+    location.line =
+        synctex_node_line(node);
+
+    location.column =
+        synctex_node_column(node);
 
     synctex_scanner_free(scanner);
 
