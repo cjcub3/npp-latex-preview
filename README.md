@@ -1,10 +1,10 @@
-Source code available, release workflows not done yet.
+Current State: WIP, Source code available, release workflows not done yet (workflows in .github are template Visual Studio compilers from the npp plugin template repo). Repo is also very unclean, e.g. cloned_src and some .txts are temporary working files that aren't in .gitignore
 
-**Requirements**
+## **Requirements**
 
 Cmake and WebView2 Runtime are necessary for this plugin to function.
 
-**To get plugin DLLs now:**
+## **To get plugin DLLs now:**
 
 1. Clone locally and open cmd in the relevant directory
 
@@ -20,7 +20,7 @@ cmake --build build
 
 4. Under the existing MinGW installation binary folder (e.g. ```C:\mingw64\bin```) find ```libwinpthread-1.dll``` and copy into the plugin folder as well. This dependency has yet to be removed so this is necessary if you are reading this now.
 
-**Basic Usage**
+## **Basic Usage**
 
 1. Navigate to a ```.tex``` file and in the menu under ```NppLatexPreview``` click "Show LaTeX Preview" to create preview panel.
 2. Click "Compile" in panel header to compile. If it fails, relevant errors will be shown in the header.
