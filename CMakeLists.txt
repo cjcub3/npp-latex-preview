@@ -24,6 +24,8 @@ set(WEBVIEW2_DLL
 
 add_library(NppLatexPreview SHARED
     src/PluginDefinition.cpp
+    third_party/synctex/synctex_parser.c
+    third_party/synctex/synctex_parser_utils.c
 )
 
 target_include_directories(
@@ -31,6 +33,7 @@ target_include_directories(
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${WEBVIEW2_INCLUDE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/synctex"
 )
 
 target_link_libraries(
