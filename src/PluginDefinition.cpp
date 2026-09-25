@@ -3569,8 +3569,8 @@ static LRESULT CALLBACK SettingsWndProc(
 
                     // Draw:
                     //
-                    //   \ 
-                    //    \__
+                    //      /
+                    //    \/
                     //
                     // as two connected segments.
 

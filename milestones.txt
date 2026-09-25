@@ -16,5 +16,5 @@
 11.4 Settings button — done
 11.5 Move g_autoCompile and g_showErrorMessages — done
 11.6 Make settings persistent — done
-11.7 Connect CompileResult to unified UI state
-11.9 Test all combinations
+11.7 Connect CompileResult to unified UI state — done
+11.9 Test all combinations — done
