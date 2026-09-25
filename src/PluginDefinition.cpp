@@ -615,7 +615,7 @@ BOOL WINAPI DllMain(
 
 
 // -----------------------------------------------------------------------------
-// Error Helpers
+// Error MsgBox Helpers
 // -----------------------------------------------------------------------------
 
 static void showHresultError(
@@ -1728,6 +1728,64 @@ static std::string readTextFile(
     return buffer.str();
 }
 
+static std::wstring makeCompileErrorMessage(
+    const CompileResult& result
+)
+{
+    std::wstring message =
+        result.errorMessage;
+
+    if (result.status ==
+        CompileStatus::LatexCompilationFailed)
+    {
+        if (message.empty())
+        {
+            message =
+                L"LaTeX compilation failed.";
+        }
+
+        message +=
+            L"\n\nExit code: " +
+            std::to_wstring(result.exitCode);
+
+        if (result.errorLine != -1)
+        {
+            message +=
+                L"\nLine: " +
+                std::to_wstring(result.errorLine);
+        }
+    }
+    else if (message.empty())
+    {
+        switch (result.status)
+        {
+            case CompileStatus::ProcessStartFailed:
+                message =
+                    L"Could not start pdflatex.exe.";
+                break;
+
+            case CompileStatus::PdfMissing:
+                message =
+                    L"pdflatex completed successfully, "
+                    L"but the expected PDF was not generated.";
+                break;
+
+            case CompileStatus::UnexpectedError:
+                message =
+                    L"An unexpected error occurred while "
+                    L"compiling LaTeX.";
+                break;
+
+            default:
+                message =
+                    L"LaTeX compilation failed.";
+                break;
+        }
+    }
+
+    return message;
+}
+
 static void parseLatexError(
     const std::string& log,
     std::wstring& errorMessage,
@@ -1897,6 +1955,13 @@ static void parseLatexError(
     }
 }
 
+static bool hasErrorLine(
+    const CompileResult& result
+)
+{
+    return result.errorLine > 0;
+}
+
 static void jumpToLine(int line)
 {
     if (line < 1)
@@ -1937,6 +2002,29 @@ static void jumpToLine(int line)
         scintillaLine,
         0
     );
+}
+
+static std::wstring makeCompileFailureStatus(
+    const CompileResult& result
+)
+{
+    std::wstring status =
+        L"Compilation failed";
+
+    if (hasErrorLine(result))
+    {
+        status +=
+            L" — line " +
+            std::to_wstring(result.errorLine);
+    }
+
+    if (!result.errorMessage.empty())
+    {
+        status += L": ";
+        status += result.errorMessage;
+    }
+
+    return status;
 }
 
 // -----------------------------------------------------------------------------
@@ -3002,69 +3090,16 @@ static LRESULT CALLBACK PanelWndProc(
 
             if (result->status != CompileStatus::Success)
             {
-                switch (result->status)
-                {
-                    case CompileStatus::ProcessStartFailed:
-                        setPreviewStatus(
-                            L"Could not start pdflatex"
-                        );
-                        break;
+                //std::wstring status =
+                //    makeCompileFailureStatus(*result);
 
-                    case CompileStatus::LatexCompilationFailed:
-                        setPreviewStatus(
-                            L"Compilation failed"
-                        );
-                        break;
+                setPreviewStatus(
+                    makeCompileFailureStatus(*result).c_str()
+                );
 
-                    case CompileStatus::PdfMissing:
-                        setPreviewStatus(
-                            L"PDF was not generated"
-                        );
-                        break;
-
-                    case CompileStatus::UnexpectedError:
-                        setPreviewStatus(
-                            L"Unexpected compilation error"
-                        );
-                        break;
-
-                    default:
-                        setPreviewStatus(
-                            L"Compilation failed"
-                        );
-                        break;
-                }
-
-                std::wstring message =
-                    result->errorMessage;
-
-                if (
-                    result->status ==
-                    CompileStatus::LatexCompilationFailed
-                )
-                {
-                    message +=
-                        L"\n\nExit code: " +
-                        std::to_wstring(result->exitCode);
-
-                    if (result->errorLine != -1)
-                    {
-                        message +=
-                            L"\nLine: " +
-                            std::to_wstring(result->errorLine);
-                    }
-                }
-
-                // MessageBoxW(
-                //     nppData._nppHandle,
-                //     message.c_str(),
-                //     L"LaTeX compilation failed",
-                //     MB_OK | MB_ICONERROR
-                // );
-                
                 showCompileError(
                     L"LaTeX compilation failed",
-                    message.c_str()
+                    makeCompileErrorMessage(*result).c_str()
                 );
 
                 if (
