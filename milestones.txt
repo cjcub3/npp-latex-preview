@@ -18,3 +18,10 @@
 11.6 Make settings persistent — done
 11.7 Connect CompileResult to unified UI state — done
 11.9 Test all combinations — done
+
+12a: add --synctex=1 and verify .synctex.gz.
+12b: vendor the upstream SyncTeX C parser and create our C++ wrapper.
+12c: make a forward-search command that gets the current Scintilla line/column and prints the resulting: page / x / y without touching WebView2 yet.
+12d: experimentally navigate the PDF with: #page=N&zoom=100,x,y
+and see how accurately Chromium's viewer lands on the SyncTeX location.
+12e: only investigate JavaScript injection or DevTools Protocol if the URL-fragment approach proves insufficient.

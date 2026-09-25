@@ -342,6 +342,7 @@ struct CompileResult
 
     std::wstring texPath;
     std::wstring pdfPath;
+    std::wstring synctexPath;
 
     int exitCode = -1;
 
@@ -1649,6 +1650,7 @@ static CompileStatus compileLatex(
     std::wstring firstCommand =
         L"pdflatex.exe "
         L"--shell-escape "
+        L"--synctex=1 "
         L"--interaction=nonstopmode "
         L"--halt-on-error "
         L"--file-line-error "
@@ -1675,6 +1677,7 @@ static CompileStatus compileLatex(
 
     std::wstring secondCommand =
         L"pdflatex.exe "
+        L"--synctex=1 "
         L"--interaction=nonstopmode "
         L"--halt-on-error "
         L"--file-line-error "
@@ -2045,6 +2048,12 @@ static void compileWorker(
 
     result->pdfPath =
         pdfPath.wstring();
+
+    std::filesystem::path synctexPath(texPath);
+    synctexPath.replace_extension(L".synctex.gz");
+    
+    result->synctexPath =
+        synctexPath.wstring();
 
     try
     {
