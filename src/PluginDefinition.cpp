@@ -1,4 +1,5 @@
 #include "PluginDefinition.h"
+#include "synctex_wrapper.h"
 
 #include <windows.h>
 #include <wrl.h>
@@ -2051,7 +2052,7 @@ static void compileWorker(
 
     std::filesystem::path synctexPath(texPath);
     synctexPath.replace_extension(L".synctex.gz");
-    
+
     result->synctexPath =
         synctexPath.wstring();
 
