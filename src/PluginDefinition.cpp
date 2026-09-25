@@ -89,6 +89,7 @@ static bool g_autoCompile = true;
 static bool g_suppressAutoCompile = false;
 static bool g_showErrorMessages = false;
 static int g_previewNavigationId = 0;
+static bool g_syncTeXOnCompile = false;
 
 // -----------------------------------------------------------------------------
 // Settings window
@@ -97,15 +98,17 @@ static int g_previewNavigationId = 0;
 static const wchar_t SETTINGS_CLASS[] =
     L"NppLatexPreviewSettings";
 
-constexpr int IDC_AUTO_COMPILE_CHECK  = 2001;
-constexpr int IDC_SHOW_MESSAGES_CHECK = 2002;
-constexpr int IDC_SETTINGS_OK         = 2003;
-constexpr int IDC_SETTINGS_CANCEL     = 2004;
+constexpr int IDC_AUTO_COMPILE_CHECK    = 2001;
+constexpr int IDC_SHOW_MESSAGES_CHECK   = 2002;
+constexpr int IDC_SYNC_TEX_ON_COMPILE   = 2003;
+constexpr int IDC_SETTINGS_OK           = 2004;
+constexpr int IDC_SETTINGS_CANCEL       = 2005;
 
 static HWND g_settingsWindow = nullptr;
 
 static HWND g_autoCompileCheck = nullptr;
 static HWND g_showMessagesCheck = nullptr;
+static HWND g_syncTeXOnCompileCheck = nullptr;
 static HWND g_settingsOkButton = nullptr;
 static HWND g_settingsCancelButton = nullptr;
 
@@ -118,6 +121,7 @@ static COLORREF g_settingsTextColor =
 
 static bool g_autoCompileChecked = false;
 static bool g_showMessagesChecked = false;
+static bool g_syncTeXOnCompileChecked = false;
 
 // -----------------------------------------------------------------------------
 // Thematic Helpers
@@ -571,6 +575,8 @@ static void shutdownWebView();
 static std::wstring getCurrentFilePath();
 static bool saveCurrentFile();
 
+static bool isTexFile(const std::wstring& path);
+
 static bool runLatexPass(
     const std::wstring& commandLine,
     const std::wstring& workingDirectory,
@@ -584,6 +590,17 @@ static CompileStatus compileLatex(
 
 static std::wstring pathToFileUrl(
     const std::wstring& path
+);
+
+static bool navigatePdfToPage(
+    const std::wstring& pdfPath,
+    int page
+);
+
+static bool performSyncTeXForwardSearch(
+    const std::wstring& texPath,
+    const std::wstring& pdfPath,
+    int* outputPage = nullptr
 );
 
 static bool compileAndShowPreview();
@@ -815,6 +832,14 @@ static void loadSettings()
         {
             g_showErrorMessages = false;
         }
+        else if (line == "SyncTeXOnCompile=1")
+        {
+            g_syncTeXOnCompile = true;
+        }
+        else if (line == "SyncTeXOnCompile=0")
+        {
+            g_syncTeXOnCompile = false;
+        }
     }
 }
 
@@ -838,6 +863,10 @@ static void saveSettings()
 
     file << "ShowErrorMessages="
          << (g_showErrorMessages ? 1 : 0)
+         << "\n";
+
+    file << "SyncTeXOnCompile="
+         << (g_syncTeXOnCompile ? 1 : 0)
          << "\n";
 }
 
@@ -904,7 +933,7 @@ static void showSettingsWindow()
             WS_MINIMIZEBOX,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            520,
+            560,
             300,
             nppData._nppHandle,
             nullptr,
@@ -917,6 +946,7 @@ static void showSettingsWindow()
     
     g_autoCompileChecked = g_autoCompile;
     g_showMessagesChecked = g_showErrorMessages;
+    g_syncTeXOnCompileChecked = g_syncTeXOnCompile;
 
     HFONT font =
         reinterpret_cast<HFONT>(
@@ -966,7 +996,7 @@ static void showSettingsWindow()
             BS_OWNERDRAW,
             20,
             48,
-            360,
+            520,
             26,
             g_settingsWindow,
             reinterpret_cast<HMENU>(
@@ -986,6 +1016,40 @@ static void showSettingsWindow()
     );
 
     // ---------------------------------------------------------
+    // SyncTeX on compile checkbox
+    // ---------------------------------------------------------
+
+    g_syncTeXOnCompileCheck =
+        CreateWindowExW(
+            0,
+            L"BUTTON",
+            L"Jump to cursor location (SyncTeX) after compiling",
+            WS_CHILD |
+            WS_VISIBLE |
+            WS_TABSTOP |
+            BS_OWNERDRAW,
+            20,
+            76,
+            520,
+            26,
+            g_settingsWindow,
+            reinterpret_cast<HMENU>(
+                static_cast<INT_PTR>(
+                    IDC_SYNC_TEX_ON_COMPILE
+                )
+            ),
+            g_hInstance,
+            nullptr
+        );
+
+    SendMessage(
+        g_syncTeXOnCompileCheck,
+        WM_SETFONT,
+        reinterpret_cast<WPARAM>(font),
+        TRUE
+    );
+
+    // ---------------------------------------------------------
     // Section label
     // ---------------------------------------------------------
 
@@ -997,7 +1061,7 @@ static void showSettingsWindow()
             WS_CHILD |
             WS_VISIBLE,
             20,
-            88,
+            116,
             150,
             24,
             g_settingsWindow,
@@ -1027,8 +1091,8 @@ static void showSettingsWindow()
             WS_TABSTOP |
             BS_OWNERDRAW,
             20,
-            116,
-            360,
+            144,
+            520,
             26,
             g_settingsWindow,
             reinterpret_cast<HMENU>(
@@ -1091,6 +1155,13 @@ static void showSettingsWindow()
         nppData._nppHandle,
         NPPM_DARKMODESUBCLASSANDTHEME,
         reinterpret_cast<WPARAM>(g_showMessagesCheck),
+        0
+    );
+
+    SendMessage(
+        nppData._nppHandle,
+        NPPM_DARKMODESUBCLASSANDTHEME,
+        reinterpret_cast<WPARAM>(g_syncTeXOnCompileCheck),
         0
     );
 
@@ -1378,115 +1449,51 @@ static bool createPanel()
 // SyncTeX
 // -----------------------------------------------------------------------------
 
-// static void testSyncTeX()
-// {
-//     std::wstring texPath =
-//         getCurrentFilePath();
+static bool performSyncTeXForwardSearch()
+{
+    std::wstring texPath = getCurrentFilePath();
 
-//     if (texPath.empty())
-//     {
-//         MessageBoxW(
-//             nppData._nppHandle,
-//             L"No current file.",
-//             PLUGIN_NAME,
-//             MB_OK | MB_ICONERROR
-//         );
+    if (texPath.empty())
+    {
+        setPreviewStatus(L"SyncTeX: no current file");
+        return false;
+    }
 
-//         return;
-//     }
+    if (!isTexFile(texPath))
+    {
+        setPreviewStatus(
+            L"SyncTeX: current file is not a .tex file"
+        );
+        return false;
+    }
 
-//     std::filesystem::path pdfPath(texPath);
-//     pdfPath.replace_extension(L".pdf");
+    std::filesystem::path pdfPath(texPath);
+    pdfPath.replace_extension(L".pdf");
 
-//     if (!std::filesystem::exists(pdfPath))
-//     {
-//         MessageBoxW(
-//             nppData._nppHandle,
-//             L"The corresponding PDF does not exist.",
-//             PLUGIN_NAME,
-//             MB_OK | MB_ICONERROR
-//         );
+    int page = -1;
 
-//         return;
-//     }
+    if (!performSyncTeXForwardSearch(
+            texPath,
+            pdfPath.wstring(),
+            &page
+        ))
+    {
+        return false;
+    }
 
-//     HWND scintilla =
-//         nppData._scintillaMainHandle;
+    std::wstring status =
+        L"SyncTeX  ↪  Page " +
+        std::to_wstring(page);
 
-//     LRESULT position =
-//         SendMessage(
-//             scintilla,
-//             SCI_GETCURRENTPOS,
-//             0,
-//             0
-//         );
+    setPreviewStatus(status.c_str());
 
-//     LRESULT line =
-//         SendMessage(
-//             scintilla,
-//             SCI_LINEFROMPOSITION,
-//             position,
-//             0
-//         );
+    return true;
+}
 
-//     LRESULT column =
-//         SendMessage(
-//             scintilla,
-//             SCI_GETCOLUMN,
-//             position,
-//             0
-//         );
-
-//     SyncTeXLocation location;
-
-//     bool found =
-//         syncTeXForwardSearch(
-//             pdfPath.wstring(),
-//             texPath,
-//             static_cast<int>(line) + 1,
-//             static_cast<int>(column),
-//             location
-//         );
-
-//     if (!found)
-//     {
-//         MessageBoxW(
-//             nppData._nppHandle,
-//             L"SyncTeX could not find a corresponding PDF location.",
-//             PLUGIN_NAME,
-//             MB_OK | MB_ICONINFORMATION
-//         );
-
-//         return;
-//     }
-
-//     std::wstring message =
-//         L"Source line: " +
-//         std::to_wstring(
-//             static_cast<int>(line) + 1
-//         ) +
-//         L"\n"
-//         L"Source column: " +
-//         std::to_wstring(
-//             static_cast<int>(column)
-//         ) +
-//         L"\n\n"
-//         L"PDF page: " +
-//         std::to_wstring(location.page) +
-//         L"\n"
-//         L"PDF X: " +
-//         std::to_wstring(location.x) +
-//         L"\n"
-//         L"PDF Y: " +
-//         std::to_wstring(location.y);
-
-//     MessageBoxW(
-//         nppData._nppHandle,
-//         message.c_str(),
-//         L"SyncTeX Test",
-//         MB_OK
-//     );
-// }
+void syncTeXTest()
+{
+    performSyncTeXForwardSearch();
+}
 
 // -----------------------------------------------------------------------------
 // Get the currently active file path
@@ -2310,7 +2317,7 @@ static void stopCompileThread()
 }
 
 // -----------------------------------------------------------------------------
-// Convert a Windows path to a file:// URL
+// PDF Path Handling & SyncTeX
 // -----------------------------------------------------------------------------
 
 static std::wstring pathToFileUrl(
@@ -2334,6 +2341,191 @@ static std::wstring pathToFileUrl(
         return {};
 
     return buffer.data();
+}
+
+static bool navigatePdfToPage(
+    const std::wstring& pdfPath,
+    int page
+)
+{
+    if (!g_webView)
+    {
+        setPreviewStatus(
+            L"Preview unavailable"
+        );
+
+        MessageBoxW(
+            nppData._nppHandle,
+            L"WebView2 is no longer available.",
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return false;
+    }
+
+    if (page < 1)
+        page = 1;
+
+    std::wstring pdfUrl =
+        pathToFileUrl(
+            pdfPath
+        );
+
+    if (pdfUrl.empty())
+    {
+        setPreviewStatus(
+            L"Could not load PDF"
+        );
+
+        MessageBoxW(
+            nppData._nppHandle,
+            L"Could not convert the PDF path to a file URL.",
+            PLUGIN_NAME,
+            MB_OK | MB_ICONERROR
+        );
+
+        return false;
+    }
+
+    // Force WebView2's PDF viewer to reload the document.
+    ++g_previewNavigationId;
+
+    pdfUrl += L"?preview=";
+    pdfUrl +=
+        std::to_wstring(
+            g_previewNavigationId
+        );
+
+    pdfUrl += L"#page=";
+    pdfUrl +=
+        std::to_wstring(page);
+
+    HRESULT hr =
+        g_webView->Navigate(
+            pdfUrl.c_str()
+        );
+
+    if (FAILED(hr))
+    {
+        setPreviewStatus(
+            L"PDF preview failed"
+        );
+
+        showHresultError(
+            PLUGIN_NAME,
+            L"WebView2 failed to navigate to the PDF.",
+            hr
+        );
+
+        return false;
+    }
+
+    return true;
+}
+
+static bool performSyncTeXForwardSearch(
+    const std::wstring& texPath,
+    const std::wstring& pdfPath,
+    int* outputPage
+)
+{
+    if (outputPage)
+        *outputPage = -1;
+
+    if (texPath.empty())
+    {
+        setPreviewStatus(
+            L"SyncTeX: source file unavailable"
+        );
+        return false;
+    }
+
+    if (pdfPath.empty())
+    {
+        setPreviewStatus(
+            L"SyncTeX: PDF path unavailable"
+        );
+        return false;
+    }
+
+    HWND scintilla =
+        nppData._scintillaMainHandle;
+
+    if (!scintilla)
+    {
+        setPreviewStatus(
+            L"SyncTeX: Scintilla unavailable"
+        );
+        return false;
+    }
+
+    LRESULT position =
+        SendMessage(
+            scintilla,
+            SCI_GETCURRENTPOS,
+            0,
+            0
+        );
+
+    LRESULT line =
+        SendMessage(
+            scintilla,
+            SCI_LINEFROMPOSITION,
+            position,
+            0
+        );
+
+    LRESULT column =
+        SendMessage(
+            scintilla,
+            SCI_GETCOLUMN,
+            position,
+            0
+        );
+
+    SyncTeXLocation location;
+
+    bool found =
+        syncTeXForwardSearch(
+            pdfPath,
+            texPath,
+            static_cast<int>(line) + 1,
+            static_cast<int>(column),
+            location
+        );
+
+    if (!found)
+    {
+        setPreviewStatus(
+            L"SyncTeX: location not found"
+        );
+        return false;
+    }
+
+    if (location.page < 1)
+    {
+        setPreviewStatus(
+            L"SyncTeX: invalid PDF page"
+        );
+        return false;
+    }
+
+    if (!navigatePdfToPage(
+            pdfPath,
+            location.page
+        ))
+    {
+        setPreviewStatus(
+            L"SyncTeX: PDF navigation failed"
+        );
+        return false;
+    }
+
+    if (outputPage)
+        *outputPage = location.page;
+
+    return true;
 }
 
 
@@ -2396,7 +2588,7 @@ static bool compileAndShowPreview()
     }
 
     updateCompileButton();
-    setPreviewStatus(L"Compiling...");
+    setPreviewStatus(L"⏳  Compiling...");
     // -------------------------------------------------------------------------
     // Save current document.
     // -------------------------------------------------------------------------
@@ -3238,30 +3430,6 @@ static LRESULT CALLBACK PanelWndProc(
                 return 0;
             }
 
-            // -------------------------------------------------------------------------
-            // Convert the generated PDF to a file:// URL.
-            // -------------------------------------------------------------------------
-
-            std::wstring pdfUrl =
-                pathToFileUrl(
-                    result->pdfPath
-                );
-
-            if (pdfUrl.empty())
-            {
-                setPreviewStatus(
-                    L"Could not load PDF"
-                );
-
-                MessageBoxW(
-                    nppData._nppHandle,
-                    L"Could not convert the PDF path to a file URL.",
-                    PLUGIN_NAME,
-                    MB_OK | MB_ICONERROR
-                );
-
-                return 0;
-            }
 
             // -------------------------------------------------------------------------
             // IMPORTANT:
@@ -3287,89 +3455,53 @@ static LRESULT CALLBACK PanelWndProc(
             }
             
             // -------------------------------------------------------------------------
-            // Try to use SyncTeX to determine which PDF page corresponds to the
-            // current source cursor position.
+            // compile success
             // -------------------------------------------------------------------------
 
-            int targetPage = 1;
-
-            // Get the current cursor position from Scintilla.
-            HWND scintilla = nppData._scintillaMainHandle;
-
-            LRESULT position =
-                SendMessage(
-                    scintilla,
-                    SCI_GETCURRENTPOS,
-                    0,
-                    0
-                );
-
-            LRESULT line =
-                SendMessage(
-                    scintilla,
-                    SCI_LINEFROMPOSITION,
-                    position,
-                    0
-                );
-
-            LRESULT column =
-                SendMessage(
-                    scintilla,
-                    SCI_GETCOLUMN,
-                    position,
-                    0
-                );
-
-            // SyncTeX uses 1-based source line numbers.
-            SyncTeXLocation location;
-
-            if (syncTeXForwardSearch(
-                    result->pdfPath,
-                    result->texPath,
-                    static_cast<int>(line) + 1,
-                    static_cast<int>(column),
-                    location))
+            if (g_syncTeXOnCompile)
             {
-                targetPage = location.page;
-            }
+                int page = -1;
 
-            ++g_previewNavigationId;
+                if (performSyncTeXForwardSearch(
+                        result->texPath,
+                        result->pdfPath,
+                        &page
+                    ))
+                {
+                    std::wstring status =
+                        L"✓  Compiled  \u00B7  SyncTeX  ↪  Page " +
+                        std::to_wstring(page);
 
-            pdfUrl += L"?preview=";
-            pdfUrl += std::to_wstring(g_previewNavigationId);
+                    setPreviewStatus(status.c_str());
+                }
+                else
+                {
+                    // SyncTeX failed, but the compilation itself succeeded.
+                    if (!navigatePdfToPage(
+                            result->pdfPath,
+                            1
+                        ))
+                    {
+                        return 0;
+                    }
 
-            pdfUrl += L"#page=";
-            pdfUrl += std::to_wstring(targetPage);
-            
-            //dbg
-            // MessageBoxW(
-            //     nppData._nppHandle,
-            //     pdfUrl.c_str(),
-            //     L"PDF URL",
-            //     MB_OK
-            // );
-
-            HRESULT hr =
-                g_webView->Navigate(
-                    pdfUrl.c_str()
-                );
-
-            if (FAILED(hr))
-            {
-                setPreviewStatus(
-                    L"PDF preview failed"
-                );
-
-                showHresultError(
-                    PLUGIN_NAME,
-                    L"WebView2 failed to navigate to the PDF.",
-                    hr
-                );
+                    setPreviewStatus(
+                        L"✓  Compiled  \u00B7  SyncTeX failed  ↪  Page 1"
+                    );
+                }
             }
             else
             {
+                if (!navigatePdfToPage(
+                        result->pdfPath,
+                        1
+                    ))
+                {
+                    return 0;
+                }
+
                 setPreviewStatus(
-                    L"Compiled successfully"
+                    L"✓  Compiled  ↪  Page 1"
                 );
             }
 
@@ -3465,7 +3597,8 @@ static LRESULT CALLBACK SettingsWndProc(
 
             if (
                 controlId != IDC_AUTO_COMPILE_CHECK &&
-                controlId != IDC_SHOW_MESSAGES_CHECK
+                controlId != IDC_SHOW_MESSAGES_CHECK &&
+                controlId != IDC_SYNC_TEX_ON_COMPILE
             )
             {
                 break;
@@ -3587,7 +3720,8 @@ static LRESULT CALLBACK SettingsWndProc(
 
             if (
                 drawItem->CtlID == IDC_AUTO_COMPILE_CHECK ||
-                drawItem->CtlID == IDC_SHOW_MESSAGES_CHECK
+                drawItem->CtlID == IDC_SHOW_MESSAGES_CHECK ||
+                drawItem->CtlID == IDC_SYNC_TEX_ON_COMPILE
             )
             {
                 // dbg
@@ -3601,10 +3735,20 @@ static LRESULT CALLBACK SettingsWndProc(
                 HDC hdc = drawItem->hDC;
                 RECT rect = drawItem->rcItem;
 
-                bool checked =
-                    drawItem->CtlID == IDC_AUTO_COMPILE_CHECK
-                        ? g_autoCompileChecked
-                        : g_showMessagesChecked;
+                bool checked;
+
+                if (drawItem->CtlID == IDC_AUTO_COMPILE_CHECK)
+                {
+                    checked = g_autoCompileChecked;
+                }
+                else if (drawItem->CtlID == IDC_SHOW_MESSAGES_CHECK)
+                {
+                    checked = g_showMessagesChecked;
+                }
+                else
+                {
+                    checked = g_syncTeXOnCompileChecked;
+                }
 
                 bool disabled =
                     (drawItem->itemState & ODS_DISABLED) != 0;
@@ -3819,11 +3963,23 @@ static LRESULT CALLBACK SettingsWndProc(
                 // Checkbox text
                 // ---------------------------------------------
 
-                const wchar_t* text =
-                    drawItem->CtlID ==
-                        IDC_AUTO_COMPILE_CHECK
-                        ? L"Compile automatically when the .tex file is saved"
-                        : L"Show compilation error message boxes";
+                const wchar_t* text;
+
+                if (drawItem->CtlID == IDC_AUTO_COMPILE_CHECK)
+                {
+                    text =
+                        L"Compile automatically when the .tex file is saved";
+                }
+                else if (drawItem->CtlID == IDC_SHOW_MESSAGES_CHECK)
+                {
+                    text =
+                        L"Show compilation error message boxes";
+                }
+                else
+                {
+                    text =
+                        L"Jump to cursor location (SyncTeX) after compiling";
+                }
 
                 RECT textRect = rect;
 
@@ -3920,6 +4076,27 @@ static LRESULT CALLBACK SettingsWndProc(
                 return 0;
             }
 
+            if (
+                notificationCode == BN_CLICKED &&
+                controlId == IDC_SYNC_TEX_ON_COMPILE
+            )
+            {
+                g_syncTeXOnCompileChecked =
+                    !g_syncTeXOnCompileChecked;
+
+                InvalidateRect(
+                    g_syncTeXOnCompileCheck,
+                    nullptr,
+                    TRUE
+                );
+
+                UpdateWindow(
+                    g_syncTeXOnCompileCheck
+                );
+
+                return 0;
+            }
+
             if (controlId == IDC_SETTINGS_OK)
             {
                 g_autoCompile =
@@ -3927,6 +4104,9 @@ static LRESULT CALLBACK SettingsWndProc(
 
                 g_showErrorMessages =
                     g_showMessagesChecked;
+
+                g_syncTeXOnCompile =
+                    g_syncTeXOnCompileChecked;
                 
                 saveSettings();
 
@@ -4001,13 +4181,13 @@ void setInfo(NppData notepadPlusData)
     funcItem[0]._init2Check = false;
     funcItem[0]._pShKey = nullptr;
 
-    // lstrcpyW(
-    //     funcItem[1]._itemName,
-    //     L"Test SyncTeX" // Your new menu text
-    // );
-    // funcItem[1]._pFunc = testSyncTeX;
-    // funcItem[1]._init2Check = false;
-    // funcItem[1]._pShKey = nullptr;
+    lstrcpyW(
+        funcItem[1]._itemName,
+        L"Perform SyncTeX forward search"
+    );
+    funcItem[1]._pFunc = syncTeXTest;
+    funcItem[1]._init2Check = false;
+    funcItem[1]._pShKey = nullptr;
 }
 
 

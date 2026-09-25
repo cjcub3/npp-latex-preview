@@ -6,7 +6,7 @@
 #include "Docking.h"
 
 #define PLUGIN_NAME L"NppLatexPreview"
-#define NB_FUNC 1
+#define NB_FUNC 2
 
 extern NppData nppData;
 extern FuncItem funcItem[NB_FUNC];
