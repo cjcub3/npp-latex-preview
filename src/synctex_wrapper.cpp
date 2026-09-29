@@ -173,3 +173,74 @@ bool syncTeXForwardSearch(
 
     return location.page > 0;
 }
+
+bool syncTeXInverseSearch(
+    const std::wstring& pdfPath,
+    int page,
+    float h,
+    float v,
+    SyncTeXLocation& location
+)
+{
+    location = {};
+
+    if (page < 1)
+        return false;
+
+    std::string pdfUtf8 = wideToUtf8(pdfPath);
+
+    if (pdfUtf8.empty())
+        return false;
+
+    synctex_scanner_p scanner =
+        synctex_scanner_new_with_output_file(
+            pdfUtf8.c_str(),
+            nullptr,
+            1
+        );
+
+    if (!scanner)
+        return false;
+
+    /*
+        synctex_edit_query() does NOT return a node.
+
+        It returns the number of matching nodes (or a
+        negative error status). The nodes themselves are
+        retrieved with synctex_scanner_next_result().
+    */
+    synctex_status_t queryResult =
+        synctex_edit_query(scanner, page, h, v);
+
+    if (queryResult <= 0)
+    {
+        synctex_scanner_free(scanner);
+        return false;
+    }
+
+    synctex_node_p node =
+        synctex_scanner_next_result(scanner);
+
+    if (!node)
+    {
+        synctex_scanner_free(scanner);
+        return false;
+    }
+
+    location.page = synctex_node_page(node);
+
+    location.x = synctex_node_visible_h(node);
+    location.y = synctex_node_visible_v(node);
+
+    location.sourceFile =
+        utf8ToWide(synctex_node_get_name(node));
+
+    location.line = synctex_node_line(node);
+    location.column = synctex_node_column(node);
+
+    synctex_scanner_free(scanner);
+
+    return location.page > 0 &&
+           !location.sourceFile.empty() &&
+           location.line > 0;
+}

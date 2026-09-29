@@ -4185,7 +4185,7 @@ void setInfo(NppData notepadPlusData)
         funcItem[1]._itemName,
         L"Perform SyncTeX forward search"
     );
-    funcItem[1]._pFunc = syncTeXTest;
+    funcItem[1]._pFunc = performSyncTeXForwardSearch;
     funcItem[1]._init2Check = false;
     funcItem[1]._pShKey = nullptr;
 }

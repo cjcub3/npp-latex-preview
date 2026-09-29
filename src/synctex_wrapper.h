@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <windows.h>
 
 struct SyncTeXLocation
 {
@@ -22,3 +23,15 @@ bool syncTeXForwardSearch(
     int column,
     SyncTeXLocation& location
 );
+
+bool syncTeXInverseSearch(
+    const std::wstring& pdfPath,
+    int page,
+    float h,
+    float v,
+    SyncTeXLocation& location
+);
+
+void testSyncTeXInverse();
+
+// static HWND g_mainWindow = nullptr;
