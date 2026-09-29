@@ -388,6 +388,14 @@ static const IID IID_WebView2ControllerCompletedHandler =
     { 0x81, 0x27, 0xC9, 0xF5, 0xBD, 0xE7, 0xF6, 0x8C }
 };
 
+static const IID IID_WebView2CallDevToolsProtocolMethodCompletedHandler =
+{
+    0xF404DB2E,
+    0xFBD0,
+    0x4A9F,
+    { 0xA3, 0xC4, 0xF0, 0x9A, 0xA8, 0x5E, 0xC1, 0xB7 }
+};
+
 
 // -----------------------------------------------------------------------------
 // Simple COM callback implementation.
@@ -543,6 +551,148 @@ private:
     Function m_function;
 };
 
+class DevToolsProtocolCompletedHandler final
+    : public ICoreWebView2CallDevToolsProtocolMethodCompletedHandler
+{
+public:
+    using Function =
+        std::function<HRESULT(HRESULT, LPCWSTR)>;
+
+    explicit DevToolsProtocolCompletedHandler(Function function)
+        : m_refCount(1),
+          m_function(std::move(function))
+    {
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(
+        REFIID riid,
+        void** ppvObject
+    ) override
+    {
+        if (!ppvObject)
+            return E_POINTER;
+
+        *ppvObject = nullptr;
+
+        if (riid == IID_IUnknown ||
+            riid == IID_WebView2CallDevToolsProtocolMethodCompletedHandler)
+        {
+            *ppvObject =
+                static_cast<
+                    ICoreWebView2CallDevToolsProtocolMethodCompletedHandler*
+                >(this);
+
+            AddRef();
+            return S_OK;
+        }
+
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override
+    {
+        return static_cast<ULONG>(
+            InterlockedIncrement(&m_refCount)
+        );
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override
+    {
+        ULONG count = static_cast<ULONG>(
+            InterlockedDecrement(&m_refCount)
+        );
+
+        if (count == 0)
+            delete this;
+
+        return count;
+    }
+
+    HRESULT STDMETHODCALLTYPE Invoke(
+        HRESULT errorCode,
+        LPCWSTR result
+    ) override
+    {
+        return m_function(errorCode, result);
+    }
+
+private:
+    LONG m_refCount;
+    Function m_function;
+};
+
+class DevToolsProtocolEventHandler final
+    : public ICoreWebView2DevToolsProtocolEventReceivedEventHandler
+{
+public:
+    using Function =
+        std::function<HRESULT(
+            ICoreWebView2*,
+            ICoreWebView2DevToolsProtocolEventReceivedEventArgs*
+        )>;
+
+    explicit DevToolsProtocolEventHandler(Function function)
+        : m_refCount(1),
+          m_function(std::move(function))
+    {
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(
+        REFIID riid,
+        void** ppvObject
+    ) override
+    {
+        if (!ppvObject)
+            return E_POINTER;
+
+        *ppvObject = nullptr;
+
+        if (riid == IID_IUnknown ||
+            riid == IID_ICoreWebView2DevToolsProtocolEventReceivedEventHandler)
+        {
+            *ppvObject =
+                static_cast<
+                    ICoreWebView2DevToolsProtocolEventReceivedEventHandler*
+                >(this);
+
+            AddRef();
+            return S_OK;
+        }
+
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override
+    {
+        return static_cast<ULONG>(
+            InterlockedIncrement(&m_refCount)
+        );
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override
+    {
+        ULONG count = static_cast<ULONG>(
+            InterlockedDecrement(&m_refCount)
+        );
+
+        if (count == 0)
+            delete this;
+
+        return count;
+    }
+
+    HRESULT STDMETHODCALLTYPE Invoke(
+        ICoreWebView2* sender,
+        ICoreWebView2DevToolsProtocolEventReceivedEventArgs* args
+    ) override
+    {
+        return m_function(sender, args);
+    }
+
+private:
+    LONG m_refCount;
+    Function m_function;
+};
 
 // -----------------------------------------------------------------------------
 // Forward declarations
@@ -4185,7 +4335,7 @@ void setInfo(NppData notepadPlusData)
         funcItem[1]._itemName,
         L"Perform SyncTeX forward search"
     );
-    funcItem[1]._pFunc = performSyncTeXForwardSearch;
+    funcItem[1]._pFunc = syncTeXTest;
     funcItem[1]._init2Check = false;
     funcItem[1]._pShKey = nullptr;
 }
