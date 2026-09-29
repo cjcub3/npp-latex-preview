@@ -54,6 +54,9 @@ static bool g_reverseSearchBindingInstalled = false;
 static bool g_reverseSearchSetupInProgress = false;
 static int g_reverseSearchSetupAttempts = 0;
 
+static bool g_reverseSearchReady = false;
+static unsigned long long g_pdfViewerGeneration = 0;
+
 constexpr UINT_PTR REVERSE_SEARCH_SETUP_TIMER_ID = 0x4E4C;
 constexpr UINT REVERSE_SEARCH_SETUP_INTERVAL_MS = 250;
 constexpr int REVERSE_SEARCH_SETUP_MAX_ATTEMPTS = 40;
@@ -768,6 +771,7 @@ static bool navigatePdfToPage(
 );
 
 static void scheduleReverseSearchSetup();
+static void invalidateReverseSearch();
 static void findAndAttachPdfViewer();
 static void subscribeToReverseSearchBinding();
 static void installReverseSearchBinding();
@@ -1670,6 +1674,18 @@ static bool performSyncTeXForwardSearch()
 void syncTeXTest()
 {
     performSyncTeXForwardSearch();
+}
+
+static void invalidateReverseSearch()
+{
+    ++g_pdfViewerGeneration;
+
+    g_reverseSearchReady = false;
+    g_reverseSearchBindingInstalled = false;
+    g_reverseSearchSetupInProgress = false;
+    g_reverseSearchSetupAttempts = 0;
+
+    g_pdfViewerSessionId.clear();
 }
 
 // -----------------------------------------------------------------------------
@@ -2639,11 +2655,16 @@ static void handleReverseSearchPayload(
     const std::wstring& payload
 )
 {
+    if (!g_reverseSearchReady)
+        return;
+    
+    double generationValue = 0.0;
     double pageValue = 0.0;
     double h = 0.0;
     double v = 0.0;
 
     if (
+        !getJsonNumber(payload, L"generation", generationValue) ||
         !getJsonNumber(payload, L"page", pageValue) ||
         !getJsonNumber(payload, L"h", h) ||
         !getJsonNumber(payload, L"v", v)
@@ -2657,6 +2678,14 @@ static void handleReverseSearchPayload(
         );
         return;
     }
+
+    const unsigned long long generation =
+        static_cast<unsigned long long>(
+            generationValue
+        );
+
+    if (generation != g_pdfViewerGeneration)
+        return;
 
     if (g_reverseSearchPdfPath.empty())
     {
@@ -2849,8 +2878,15 @@ static void installReverseSearchJavaScript()
         return;
     }
 
+    const unsigned long long generation =
+    g_pdfViewerGeneration;
+
     const std::wstring expression = LR"JS(
 (function() {
+    const generation = )JS"
+    + std::to_wstring(generation) +
+    LR"JS(;
+
     const port =
         window.viewer &&
         window.viewer.pluginController_ &&
@@ -2925,6 +2961,7 @@ static void installReverseSearchJavaScript()
 
                         window.NppLatexPreview_reverseSearch(
                             JSON.stringify({
+                                generation: generation,
                                 page: i + 1,
                                 h: h,
                                 v: v
@@ -2975,24 +3012,44 @@ static void installReverseSearchJavaScript()
             {
                 if (FAILED(errorCode))
                 {
-                    showHresultError(
-                        PLUGIN_NAME,
-                        L"Could not install reverse SyncTeX JavaScript.",
-                        errorCode
-                    );
-                    return S_OK;
-                }
-
-                if (
-                    result &&
-                    std::wstring(result).find(L"message port not found") !=
-                        std::wstring::npos
-                )
-                {
+                    g_reverseSearchReady = false;
                     g_reverseSearchSetupInProgress = false;
                     return S_OK;
                 }
 
+                if (!result)
+                {
+                    g_reverseSearchReady = false;
+                    g_reverseSearchSetupInProgress = false;
+                    return S_OK;
+                }
+
+                std::wstring resultText(result);
+
+                if (resultText.find(L"message port not found") != std::wstring::npos)
+                {
+                    // The PDF viewer exists, but its internal JS hasn't finished
+                    // initializing yet. The timer should try again.
+                    g_reverseSearchReady = false;
+                    g_reverseSearchSetupInProgress = false;
+                    return S_OK;
+                }
+
+                if (resultText.find(L"reverse search installed") != std::wstring::npos)
+                {
+                    g_reverseSearchReady = true;
+                    g_reverseSearchSetupInProgress = false;
+                    return S_OK;
+                }
+
+                if (resultText.find(L"already installed") != std::wstring::npos)
+                {
+                    g_reverseSearchReady = true;
+                    g_reverseSearchSetupInProgress = false;
+                    return S_OK;
+                }
+
+                g_reverseSearchReady = false;
                 g_reverseSearchSetupInProgress = false;
                 return S_OK;
             }
@@ -3137,7 +3194,8 @@ static void installReverseSearchBinding()
                                             }
 
                                             g_reverseSearchBindingInstalled = true;
-                                            g_reverseSearchSetupInProgress = false;
+                                            g_reverseSearchReady = false;
+                                            g_reverseSearchSetupInProgress = true;
 
                                             installReverseSearchJavaScript();
                                             return S_OK;
@@ -3155,6 +3213,8 @@ static void installReverseSearchBinding()
                                 L"Could not start Runtime.addBinding.",
                                 hr
                             );
+                            g_reverseSearchBindingInstalled = false;
+                            g_reverseSearchReady = false;
                             g_reverseSearchSetupInProgress = false;
                         }
 
@@ -3184,13 +3244,14 @@ static void findAndAttachPdfViewer()
         g_reverseSearchSetupInProgress = false;
         return;
     }
-
+    /* SESSION ID CHANGES, DO NOT USE
     if (!g_pdfViewerSessionId.empty())
     {
         g_reverseSearchSetupInProgress = false;
         installReverseSearchJavaScript();
         return;
     }
+    */
 
     auto* handler =
         new (std::nothrow) DevToolsProtocolCompletedHandler(
@@ -3294,13 +3355,18 @@ static void findAndAttachPdfViewer()
                             g_pdfViewerSessionId =
                                 json.substr(pos, end - pos);
 
+                            g_reverseSearchBindingInstalled = false;
+                            g_reverseSearchReady = false;
+
                             g_reverseSearchSetupAttempts = 0;
+
                             KillTimer(
                                 g_panel,
                                 REVERSE_SEARCH_SETUP_TIMER_ID
                             );
 
                             g_reverseSearchSetupInProgress = true;
+
                             installReverseSearchBinding();
 
                             return S_OK;
@@ -3451,6 +3517,9 @@ static bool navigatePdfToPage(
     pdfUrl += L"#page=";
     pdfUrl +=
         std::to_wstring(page);
+
+    // The current PDF viewer/session is about to become stale.
+    invalidateReverseSearch();
 
     HRESULT hr =
         g_webView->Navigate(
@@ -4285,8 +4354,20 @@ static LRESULT CALLBACK PanelWndProc(
                 return 0;
             }
 
+            if (g_reverseSearchReady)
+            {
+                KillTimer(
+                    g_panel,
+                    REVERSE_SEARCH_SETUP_TIMER_ID
+                );
+
+                return 0;
+            }
+
             if (g_reverseSearchSetupInProgress)
                 return 0;
+            
+            g_reverseSearchSetupInProgress = true;
 
             ++g_reverseSearchSetupAttempts;
 
@@ -4303,11 +4384,6 @@ static LRESULT CALLBACK PanelWndProc(
             if (!g_pdfViewerSessionId.empty() &&
                 g_reverseSearchBindingInstalled)
             {
-                KillTimer(
-                    hwnd,
-                    REVERSE_SEARCH_SETUP_TIMER_ID
-                );
-
                 g_reverseSearchSetupInProgress = true;
                 installReverseSearchJavaScript();
                 return 0;
