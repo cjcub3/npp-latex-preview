@@ -38,6 +38,26 @@ static HWND g_panel = nullptr;
 static ComPtr<ICoreWebView2Controller> g_controller;
 static ComPtr<ICoreWebView2> g_webView;
 
+// -----------------------------------------------------------------------------
+// Reverse SyncTeX / PDF viewer CDP state
+// -----------------------------------------------------------------------------
+
+static std::wstring g_pdfViewerSessionId;
+static std::wstring g_reverseSearchPdfPath;
+
+static ICoreWebView2DevToolsProtocolEventReceiver*
+    g_bindingEventReceiver = nullptr;
+
+static EventRegistrationToken g_bindingEventToken{};
+
+static bool g_reverseSearchBindingInstalled = false;
+static bool g_reverseSearchSetupInProgress = false;
+static int g_reverseSearchSetupAttempts = 0;
+
+constexpr UINT_PTR REVERSE_SEARCH_SETUP_TIMER_ID = 0x4E4C;
+constexpr UINT REVERSE_SEARCH_SETUP_INTERVAL_MS = 250;
+constexpr int REVERSE_SEARCH_SETUP_MAX_ATTEMPTS = 40;
+
 static bool g_dockingRegistered = false;
 static bool g_comInitialized = false;
 
@@ -746,6 +766,13 @@ static bool navigatePdfToPage(
     const std::wstring& pdfPath,
     int page
 );
+
+static void scheduleReverseSearchSetup();
+static void findAndAttachPdfViewer();
+static void subscribeToReverseSearchBinding();
+static void installReverseSearchBinding();
+static void installReverseSearchJavaScript();
+static void handleReverseSearchPayload(const std::wstring& payload);
 
 static bool performSyncTeXForwardSearch(
     const std::wstring& texPath,
@@ -2467,6 +2494,880 @@ static void stopCompileThread()
 }
 
 // -----------------------------------------------------------------------------
+// Reverse SyncTeX / PDF viewer CDP
+// -----------------------------------------------------------------------------
+
+static std::wstring jsonEscape(
+    const std::wstring& input
+)
+{
+    std::wstring output;
+
+    for (wchar_t c : input)
+    {
+        switch (c)
+        {
+        case L'\\':
+            output += L"\\\\";
+            break;
+
+        case L'"':
+            output += L"\\\"";
+            break;
+
+        case L'\n':
+            output += L"\\n";
+            break;
+
+        case L'\r':
+            output += L"\\r";
+            break;
+
+        case L'\t':
+            output += L"\\t";
+            break;
+
+        default:
+            output += c;
+            break;
+        }
+    }
+
+    return output;
+}
+
+static bool getJsonNumber(
+    const std::wstring& json,
+    const wchar_t* key,
+    double& value
+)
+{
+    std::wstring marker =
+        L"\"" + std::wstring(key) + L"\":";
+
+    size_t pos =
+        json.find(marker);
+
+    if (pos == std::wstring::npos)
+        return false;
+
+    pos += marker.length();
+
+    const wchar_t* start =
+        json.c_str() + pos;
+
+    wchar_t* end = nullptr;
+
+    value = wcstod(start, &end);
+
+    return end != start;
+}
+
+static bool getJsonString(
+    const std::wstring& json,
+    const wchar_t* key,
+    std::wstring& value
+)
+{
+    const std::wstring marker =
+        L"\"" + std::wstring(key) + L"\":\"";
+
+    size_t pos =
+        json.find(marker);
+
+    if (pos == std::wstring::npos)
+        return false;
+
+    pos += marker.length();
+    value.clear();
+
+    bool escaped = false;
+
+    for (; pos < json.size(); ++pos)
+    {
+        const wchar_t c = json[pos];
+
+        if (escaped)
+        {
+            switch (c)
+            {
+            case L'"':
+                value += L'"';
+                break;
+
+            case L'\\':
+                value += L'\\';
+                break;
+
+            case L'n':
+                value += L'\n';
+                break;
+
+            case L'r':
+                value += L'\r';
+                break;
+
+            case L't':
+                value += L'\t';
+                break;
+
+            default:
+                value += c;
+                break;
+            }
+
+            escaped = false;
+            continue;
+        }
+
+        if (c == L'\\')
+        {
+            escaped = true;
+            continue;
+        }
+
+        if (c == L'"')
+            return true;
+
+        value += c;
+    }
+
+    return false;
+}
+
+static void handleReverseSearchPayload(
+    const std::wstring& payload
+)
+{
+    double pageValue = 0.0;
+    double h = 0.0;
+    double v = 0.0;
+
+    if (
+        !getJsonNumber(payload, L"page", pageValue) ||
+        !getJsonNumber(payload, L"h", h) ||
+        !getJsonNumber(payload, L"v", v)
+    )
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            payload.c_str(),
+            L"Could not parse reverse SyncTeX payload",
+            MB_OK | MB_ICONERROR
+        );
+        return;
+    }
+
+    if (g_reverseSearchPdfPath.empty())
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            L"No PDF path is associated with the current preview.",
+            L"SyncTeX",
+            MB_OK | MB_ICONERROR
+        );
+        return;
+    }
+
+    const int page =
+        static_cast<int>(pageValue);
+
+    SyncTeXLocation location;
+
+    bool syncOk =
+        syncTeXInverseSearch(
+            g_reverseSearchPdfPath,
+            page,
+            static_cast<float>(h),
+            static_cast<float>(v),
+            location
+        );
+
+    if (!syncOk)
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            L"SyncTeX inverse search returned no result.",
+            L"SyncTeX",
+            MB_OK | MB_ICONERROR
+        );
+        return;
+    }
+
+    std::wstring message =
+        L"Page: " +
+        std::to_wstring(page) +
+        L"\n" +
+        L"h: " +
+        std::to_wstring(h) +
+        L"\n" +
+        L"v: " +
+        std::to_wstring(v) +
+        L"\n\n" +
+        L"File: " +
+        location.sourceFile +
+        L"\n" +
+        L"Line: " +
+        std::to_wstring(location.line) +
+        L"\n" +
+        L"Column: " +
+        std::to_wstring(location.column);
+
+    MessageBoxW(
+        nppData._nppHandle,
+        message.c_str(),
+        L"SyncTeX Ctrl+click",
+        MB_OK
+    );
+}
+
+static void subscribeToReverseSearchBinding()
+{
+    if (!g_webView)
+        return;
+
+    if (g_bindingEventReceiver)
+    {
+        g_bindingEventReceiver->remove_DevToolsProtocolEventReceived(
+            g_bindingEventToken
+        );
+
+        g_bindingEventReceiver->Release();
+        g_bindingEventReceiver = nullptr;
+        g_bindingEventToken = {};
+    }
+
+    HRESULT hr =
+        g_webView->GetDevToolsProtocolEventReceiver(
+            L"Runtime.bindingCalled",
+            &g_bindingEventReceiver
+        );
+
+    if (FAILED(hr))
+    {
+        showHresultError(
+            PLUGIN_NAME,
+            L"Could not obtain the Runtime.bindingCalled event receiver.",
+            hr
+        );
+        return;
+    }
+
+    auto* handler =
+        new (std::nothrow) DevToolsProtocolEventHandler(
+            [](
+                ICoreWebView2*,
+                ICoreWebView2DevToolsProtocolEventReceivedEventArgs* args
+            ) -> HRESULT
+            {
+                if (!args)
+                    return S_OK;
+
+                LPWSTR parameterJson = nullptr;
+
+                HRESULT hr =
+                    args->get_ParameterObjectAsJson(
+                        &parameterJson
+                    );
+
+                if (FAILED(hr))
+                    return hr;
+
+                if (parameterJson)
+                {
+                    std::wstring parameterString(
+                        parameterJson
+                    );
+
+                    std::wstring name;
+                    std::wstring payload;
+
+                    if (
+                        getJsonString(
+                            parameterString,
+                            L"name",
+                            name
+                        ) &&
+                        name == L"NppLatexPreview_reverseSearch" &&
+                        getJsonString(
+                            parameterString,
+                            L"payload",
+                            payload
+                        )
+                    )
+                    {
+                        handleReverseSearchPayload(payload);
+                    }
+
+                    CoTaskMemFree(parameterJson);
+                }
+
+                return S_OK;
+            }
+        );
+
+    if (!handler)
+    {
+        g_bindingEventReceiver->Release();
+        g_bindingEventReceiver = nullptr;
+
+        showHresultError(
+            PLUGIN_NAME,
+            L"Could not allocate the Runtime.bindingCalled handler.",
+            E_OUTOFMEMORY
+        );
+        return;
+    }
+
+    hr =
+        g_bindingEventReceiver->add_DevToolsProtocolEventReceived(
+            handler,
+            &g_bindingEventToken
+        );
+
+    handler->Release();
+
+    if (FAILED(hr))
+    {
+        g_bindingEventReceiver->Release();
+        g_bindingEventReceiver = nullptr;
+        g_bindingEventToken = {};
+
+        showHresultError(
+            PLUGIN_NAME,
+            L"Could not subscribe to Runtime.bindingCalled.",
+            hr
+        );
+    }
+}
+
+static void installReverseSearchJavaScript()
+{
+    if (!g_webView ||
+        g_pdfViewerSessionId.empty())
+    {
+        return;
+    }
+
+    const std::wstring expression = LR"JS(
+(function() {
+    const port =
+        window.viewer &&
+        window.viewer.pluginController_ &&
+        window.viewer.pluginController_.messagePort_;
+
+    if (!port)
+        return "message port not found";
+
+    if (window.__nppLatexPreviewReverseSearchInstalled)
+        return "already installed";
+
+    window.__nppLatexPreviewReverseSearchInstalled = true;
+
+    window.viewer.subscribePointerEventsUnseasoned_();
+
+    const original = port.onmessage;
+
+    port.onmessage = function(e) {
+        try {
+            const data = e.data;
+
+            if (
+                data &&
+                data.type === "pointerEvent" &&
+                data.detail &&
+                data.detail.type === "pointerup" &&
+                data.detail.button === 0 &&
+                data.detail.ctrlKey
+            ) {
+                const click = data.detail;
+                const vp = window.viewer.viewport_;
+
+                const pluginRect =
+                    vp.getPluginRectInFrame();
+
+                const internalZoom =
+                    vp.internalZoom_;
+
+                const screenX =
+                    click.clientX + pluginRect.x;
+
+                const screenY =
+                    click.clientY + pluginRect.y;
+
+                const pageCount =
+                    vp.pageDimensions_.length;
+
+                for (let i = 0; i < pageCount; ++i) {
+                    const pageRect =
+                        vp.getPageScreenRect(i);
+
+                    if (
+                        screenX >= pageRect.x &&
+                        screenX <= pageRect.x + pageRect.width &&
+                        screenY >= pageRect.y &&
+                        screenY <= pageRect.y + pageRect.height
+                    ) {
+                        const localX =
+                            screenX - pageRect.x;
+
+                        const localY =
+                            screenY - pageRect.y;
+
+                        const scale =
+                            (96.0 / 72.0) * internalZoom;
+
+                        const h =
+                            localX / scale;
+
+                        const v =
+                            localY / scale;
+
+                        window.NppLatexPreview_reverseSearch(
+                            JSON.stringify({
+                                page: i + 1,
+                                h: h,
+                                v: v
+                            })
+                        );
+
+                        break;
+                    }
+                }
+            }
+        }
+        catch (_) {}
+
+        if (original)
+            original.call(port, e);
+    };
+
+    return "reverse search installed";
+})()
+)JS";
+
+    std::wstring params =
+        L"{\"expression\":\"" +
+        jsonEscape(expression) +
+        L"\",\"returnByValue\":true}";
+
+    ICoreWebView2_11* webView11 = nullptr;
+
+    HRESULT hr =
+        g_webView->QueryInterface(
+            IID_ICoreWebView2_11,
+            reinterpret_cast<void**>(&webView11)
+        );
+
+    if (FAILED(hr))
+    {
+        showHresultError(
+            PLUGIN_NAME,
+            L"Could not obtain ICoreWebView2_11 for reverse SyncTeX.",
+            hr
+        );
+        return;
+    }
+
+    auto* handler =
+        new (std::nothrow) DevToolsProtocolCompletedHandler(
+            [](HRESULT errorCode, LPCWSTR result) -> HRESULT
+            {
+                if (FAILED(errorCode))
+                {
+                    showHresultError(
+                        PLUGIN_NAME,
+                        L"Could not install reverse SyncTeX JavaScript.",
+                        errorCode
+                    );
+                    return S_OK;
+                }
+
+                if (
+                    result &&
+                    std::wstring(result).find(L"message port not found") !=
+                        std::wstring::npos
+                )
+                {
+                    g_reverseSearchSetupInProgress = false;
+                    return S_OK;
+                }
+
+                g_reverseSearchSetupInProgress = false;
+                return S_OK;
+            }
+        );
+
+    if (!handler)
+    {
+        webView11->Release();
+        showHresultError(
+            PLUGIN_NAME,
+            L"Could not allocate the reverse SyncTeX JavaScript handler.",
+            E_OUTOFMEMORY
+        );
+        return;
+    }
+
+    hr =
+        webView11->CallDevToolsProtocolMethodForSession(
+            g_pdfViewerSessionId.c_str(),
+            L"Runtime.evaluate",
+            params.c_str(),
+            handler
+        );
+
+    handler->Release();
+    webView11->Release();
+
+    if (FAILED(hr))
+    {
+        showHresultError(
+            PLUGIN_NAME,
+            L"Could not start reverse SyncTeX JavaScript.",
+            hr
+        );
+    }
+}
+
+static void installReverseSearchBinding()
+{
+    if (!g_webView ||
+        g_pdfViewerSessionId.empty())
+    {
+        return;
+    }
+
+    subscribeToReverseSearchBinding();
+
+    if (!g_bindingEventReceiver)
+        return;
+
+    if (g_reverseSearchBindingInstalled)
+    {
+        installReverseSearchJavaScript();
+        return;
+    }
+
+    ICoreWebView2_11* webView11 = nullptr;
+
+    HRESULT hr =
+        g_webView->QueryInterface(
+            IID_ICoreWebView2_11,
+            reinterpret_cast<void**>(&webView11)
+        );
+
+    if (FAILED(hr))
+    {
+        showHresultError(
+            PLUGIN_NAME,
+            L"Could not obtain ICoreWebView2_11 for reverse SyncTeX.",
+            hr
+        );
+        return;
+    }
+
+    hr =
+        webView11->CallDevToolsProtocolMethodForSession(
+            g_pdfViewerSessionId.c_str(),
+            L"Runtime.enable",
+            L"{}",
+            new (std::nothrow) DevToolsProtocolCompletedHandler(
+                DevToolsProtocolCompletedHandler::Function(
+                    [](HRESULT errorCode, LPCWSTR) -> HRESULT
+                    {
+                        if (FAILED(errorCode))
+                        {
+                            showHresultError(
+                                PLUGIN_NAME,
+                                L"Runtime.enable failed for reverse SyncTeX.",
+                                errorCode
+                            );
+                            g_reverseSearchSetupInProgress = false;
+                            return S_OK;
+                        }
+
+                        if (!g_webView ||
+                            g_pdfViewerSessionId.empty())
+                        {
+                            g_reverseSearchSetupInProgress = false;
+                            return S_OK;
+                        }
+
+                        ICoreWebView2_11* webView11 = nullptr;
+
+                        HRESULT hr =
+                            g_webView->QueryInterface(
+                                IID_ICoreWebView2_11,
+                                reinterpret_cast<void**>(&webView11)
+                            );
+
+                        if (FAILED(hr))
+                        {
+                            showHresultError(
+                                PLUGIN_NAME,
+                                L"Could not obtain ICoreWebView2_11 for Runtime.addBinding.",
+                                hr
+                            );
+                            g_reverseSearchSetupInProgress = false;
+                            return S_OK;
+                        }
+
+                        const wchar_t* params =
+                            LR"({"name":"NppLatexPreview_reverseSearch"})";
+
+                        hr =
+                            webView11->CallDevToolsProtocolMethodForSession(
+                                g_pdfViewerSessionId.c_str(),
+                                L"Runtime.addBinding",
+                                params,
+                                new (std::nothrow) DevToolsProtocolCompletedHandler(
+                                    DevToolsProtocolCompletedHandler::Function(
+                                        [](HRESULT addBindingError, LPCWSTR) -> HRESULT
+                                        {
+                                            if (FAILED(addBindingError))
+                                            {
+                                                showHresultError(
+                                                    PLUGIN_NAME,
+                                                    L"Runtime.addBinding failed for reverse SyncTeX.",
+                                                    addBindingError
+                                                );
+                                                g_reverseSearchSetupInProgress = false;
+                                                return S_OK;
+                                            }
+
+                                            g_reverseSearchBindingInstalled = true;
+                                            g_reverseSearchSetupInProgress = false;
+
+                                            installReverseSearchJavaScript();
+                                            return S_OK;
+                                        }
+                                    )
+                                )
+                            );
+
+                        webView11->Release();
+
+                        if (FAILED(hr))
+                        {
+                            showHresultError(
+                                PLUGIN_NAME,
+                                L"Could not start Runtime.addBinding.",
+                                hr
+                            );
+                            g_reverseSearchSetupInProgress = false;
+                        }
+
+                        return S_OK;
+                    }
+                )
+            )
+        );
+
+    webView11->Release();
+
+    if (FAILED(hr))
+    {
+        showHresultError(
+            PLUGIN_NAME,
+            L"Could not start Runtime.enable for reverse SyncTeX.",
+            hr
+        );
+        g_reverseSearchSetupInProgress = false;
+    }
+}
+
+static void findAndAttachPdfViewer()
+{
+    if (!g_webView)
+    {
+        g_reverseSearchSetupInProgress = false;
+        return;
+    }
+
+    if (!g_pdfViewerSessionId.empty())
+    {
+        g_reverseSearchSetupInProgress = false;
+        installReverseSearchJavaScript();
+        return;
+    }
+
+    auto* handler =
+        new (std::nothrow) DevToolsProtocolCompletedHandler(
+            [](HRESULT errorCode, LPCWSTR result) -> HRESULT
+            {
+                if (FAILED(errorCode))
+                {
+                    g_reverseSearchSetupInProgress = false;
+                    return S_OK;
+                }
+
+                if (!result)
+                {
+                    g_reverseSearchSetupInProgress = false;
+                    return S_OK;
+                }
+
+                std::wstring json(result);
+
+                const std::wstring typeMarker =
+                    L"\"type\":\"webview\"";
+
+                const std::wstring targetMarker =
+                    L"\"targetId\":\"";
+
+                size_t webviewPos =
+                    json.find(typeMarker);
+
+                if (webviewPos == std::wstring::npos)
+                {
+                    g_reverseSearchSetupInProgress = false;
+                    return S_OK;
+                }
+
+                size_t targetPos =
+                    json.rfind(targetMarker, webviewPos);
+
+                if (targetPos == std::wstring::npos)
+                {
+                    g_reverseSearchSetupInProgress = false;
+                    return S_OK;
+                }
+
+                targetPos += targetMarker.length();
+
+                size_t targetEnd =
+                    json.find(L'"', targetPos);
+
+                if (targetEnd == std::wstring::npos)
+                {
+                    g_reverseSearchSetupInProgress = false;
+                    return S_OK;
+                }
+
+                std::wstring targetId =
+                    json.substr(
+                        targetPos,
+                        targetEnd - targetPos
+                    );
+
+                std::wstring params =
+                    L"{\"targetId\":\"" +
+                    targetId +
+                    L"\",\"flatten\":true}";
+
+                auto* attachHandler =
+                    new (std::nothrow) DevToolsProtocolCompletedHandler(
+                        [](HRESULT attachError, LPCWSTR attachResult) -> HRESULT
+                        {
+                            if (FAILED(attachError) || !attachResult)
+                            {
+                                g_reverseSearchSetupInProgress = false;
+                                return S_OK;
+                            }
+
+                            std::wstring json(attachResult);
+
+                            const std::wstring marker =
+                                L"\"sessionId\":\"";
+
+                            size_t pos =
+                                json.find(marker);
+
+                            if (pos == std::wstring::npos)
+                            {
+                                g_reverseSearchSetupInProgress = false;
+                                return S_OK;
+                            }
+
+                            pos += marker.length();
+
+                            size_t end =
+                                json.find(L'"', pos);
+
+                            if (end == std::wstring::npos)
+                            {
+                                g_reverseSearchSetupInProgress = false;
+                                return S_OK;
+                            }
+
+                            g_pdfViewerSessionId =
+                                json.substr(pos, end - pos);
+
+                            g_reverseSearchSetupAttempts = 0;
+                            KillTimer(
+                                g_panel,
+                                REVERSE_SEARCH_SETUP_TIMER_ID
+                            );
+
+                            g_reverseSearchSetupInProgress = true;
+                            installReverseSearchBinding();
+
+                            return S_OK;
+                        }
+                    );
+
+                if (!attachHandler)
+                {
+                    g_reverseSearchSetupInProgress = false;
+                    return E_OUTOFMEMORY;
+                }
+
+                HRESULT hr =
+                    g_webView->CallDevToolsProtocolMethod(
+                        L"Target.attachToTarget",
+                        params.c_str(),
+                        attachHandler
+                    );
+
+                attachHandler->Release();
+
+                if (FAILED(hr))
+                    g_reverseSearchSetupInProgress = false;
+
+                return S_OK;
+            }
+        );
+
+    if (!handler)
+    {
+        g_reverseSearchSetupInProgress = false;
+        return;
+    }
+
+    HRESULT hr =
+        g_webView->CallDevToolsProtocolMethod(
+            L"Target.getTargets",
+            L"{}",
+            handler
+        );
+
+    handler->Release();
+
+    if (FAILED(hr))
+        g_reverseSearchSetupInProgress = false;
+}
+
+static void scheduleReverseSearchSetup()
+{
+    if (!g_webView ||
+        !g_panel ||
+        !IsWindow(g_panel))
+    {
+        return;
+    }
+
+    g_reverseSearchSetupAttempts = 0;
+
+    SetTimer(
+        g_panel,
+        REVERSE_SEARCH_SETUP_TIMER_ID,
+        REVERSE_SEARCH_SETUP_INTERVAL_MS,
+        nullptr
+    );
+}
+
+// -----------------------------------------------------------------------------
 // PDF Path Handling & SyncTeX
 // -----------------------------------------------------------------------------
 
@@ -2570,6 +3471,9 @@ static bool navigatePdfToPage(
 
         return false;
     }
+
+    g_reverseSearchPdfPath = pdfPath;
+    scheduleReverseSearchSetup();
 
     return true;
 }
@@ -3319,6 +4223,31 @@ static void shutdownWebView()
     g_webViewInitializing = false;
     g_compileWhenReady = false;
 
+    if (g_panel &&
+        IsWindow(g_panel))
+    {
+        KillTimer(
+            g_panel,
+            REVERSE_SEARCH_SETUP_TIMER_ID
+        );
+    }
+
+    g_reverseSearchSetupInProgress = false;
+    g_reverseSearchSetupAttempts = 0;
+    g_reverseSearchBindingInstalled = false;
+    g_pdfViewerSessionId.clear();
+    g_reverseSearchPdfPath.clear();
+
+    if (g_bindingEventReceiver)
+    {
+        g_bindingEventReceiver->remove_DevToolsProtocolEventReceived(
+            g_bindingEventToken
+        );
+        g_bindingEventReceiver->Release();
+        g_bindingEventReceiver = nullptr;
+        g_bindingEventToken = {};
+    }
+
     if (g_controller)
     {
         g_controller->Close();
@@ -3342,6 +4271,53 @@ static LRESULT CALLBACK PanelWndProc(
 {
     switch (message)
     {
+        case WM_TIMER:
+        {
+            if (wParam != REVERSE_SEARCH_SETUP_TIMER_ID)
+                break;
+
+            if (!g_webView)
+            {
+                KillTimer(
+                    hwnd,
+                    REVERSE_SEARCH_SETUP_TIMER_ID
+                );
+                return 0;
+            }
+
+            if (g_reverseSearchSetupInProgress)
+                return 0;
+
+            ++g_reverseSearchSetupAttempts;
+
+            if (g_reverseSearchSetupAttempts >
+                REVERSE_SEARCH_SETUP_MAX_ATTEMPTS)
+            {
+                KillTimer(
+                    hwnd,
+                    REVERSE_SEARCH_SETUP_TIMER_ID
+                );
+                return 0;
+            }
+
+            if (!g_pdfViewerSessionId.empty() &&
+                g_reverseSearchBindingInstalled)
+            {
+                KillTimer(
+                    hwnd,
+                    REVERSE_SEARCH_SETUP_TIMER_ID
+                );
+
+                g_reverseSearchSetupInProgress = true;
+                installReverseSearchJavaScript();
+                return 0;
+            }
+
+            g_reverseSearchSetupInProgress = true;
+            findAndAttachPdfViewer();
+            return 0;
+        }
+
         case WM_SIZE:
         {
             resizeWebView();
