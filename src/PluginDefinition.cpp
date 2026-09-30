@@ -1663,7 +1663,7 @@ static bool performSyncTeXForwardSearch()
     }
 
     std::wstring status =
-        L"SyncTeX  ↪  Page " +
+        L"SyncTeX  \u21AA  Page " +
         std::to_wstring(page);
 
     setPreviewStatus(status.c_str());
@@ -2273,6 +2273,99 @@ static void parseLatexError(
     }
 }
 
+static HWND getCurrentScintilla()
+{
+    int currentView = static_cast<int>(
+        SendMessage(
+            nppData._nppHandle,
+            NPPM_GETCURRENTVIEW,
+            0,
+            0
+        )
+    );
+
+    if (currentView == MAIN_VIEW)
+        return nppData._scintillaMainHandle;
+
+    if (currentView == SUB_VIEW)
+        return nppData._scintillaSecondHandle;
+
+    return nullptr;
+}
+
+static bool jumpToSyncTeXLocation(
+    const SyncTeXLocation& location
+)
+{
+    if (
+        location.sourceFile.empty() ||
+        location.line < 1
+    )
+    {
+        return false;
+    }
+
+    // Open the source file.
+    LRESULT opened = SendMessage(
+        nppData._nppHandle,
+        NPPM_DOOPEN,
+        0,
+        reinterpret_cast<LPARAM>(
+            location.sourceFile.c_str()
+        )
+    );
+
+    if (!opened)
+        return false;
+
+    // NPPM_DOOPEN activates the file, so now determine
+    // which Scintilla view contains the active document.
+    HWND scintilla = getCurrentScintilla();
+
+    if (!scintilla)
+        return false;
+
+    // SyncTeX line numbers are 1-based.
+    const int scintillaLine =
+        location.line - 1;
+
+    LRESULT lineCount =
+        SendMessage(
+            scintilla,
+            SCI_GETLINECOUNT,
+            0,
+            0
+        );
+
+    if (lineCount <= 0)
+        return false;
+
+    int targetLine = scintillaLine;
+
+    if (targetLine >= lineCount)
+        targetLine =
+            static_cast<int>(lineCount) - 1;
+
+    if (targetLine < 0)
+        return false;
+
+    SendMessage(
+        scintilla,
+        SCI_GOTOLINE,
+        targetLine,
+        0
+    );
+
+    SendMessage(
+        scintilla,
+        SCI_ENSUREVISIBLE,
+        targetLine,
+        0
+    );
+
+    return true;
+}
+
 static bool hasErrorLine(
     const CompileResult& result
 )
@@ -2722,7 +2815,7 @@ static void handleReverseSearchPayload(
         );
         return;
     }
-
+    /*
     std::wstring message =
         L"Page: " +
         std::to_wstring(page) +
@@ -2747,6 +2840,22 @@ static void handleReverseSearchPayload(
         message.c_str(),
         L"SyncTeX Ctrl+click",
         MB_OK
+    );
+    */
+    if (!jumpToSyncTeXLocation(location))
+    {
+        MessageBoxW(
+            nppData._nppHandle,
+            L"Could not open the SyncTeX source location.",
+            L"SyncTeX",
+            MB_OK | MB_ICONERROR
+        );
+        return;
+    }
+
+    setPreviewStatus(
+        (std::wstring(L"SyncTeX  \u21A9  Line ") +
+        std::to_wstring(location.line)).c_str()
     );
 }
 
@@ -4671,7 +4780,7 @@ static LRESULT CALLBACK PanelWndProc(
                     ))
                 {
                     std::wstring status =
-                        L"✓  Compiled  \u00B7  SyncTeX  ↪  Page " +
+                        L"\u2713  Compiled  \u00B7  SyncTeX  \u21AA  Page " +
                         std::to_wstring(page);
 
                     setPreviewStatus(status.c_str());
@@ -4688,7 +4797,7 @@ static LRESULT CALLBACK PanelWndProc(
                     }
 
                     setPreviewStatus(
-                        L"✓  Compiled  \u00B7  SyncTeX failed  ↪  Page 1"
+                        L"\u2713  Compiled  \u00B7  SyncTeX failed  \u21AA  Page 1"
                     );
                 }
             }
@@ -4703,7 +4812,7 @@ static LRESULT CALLBACK PanelWndProc(
                 }
 
                 setPreviewStatus(
-                    L"✓  Compiled  ↪  Page 1"
+                    L"\u2713  Compiled  \u21AA  Page 1"
                 );
             }
 
