@@ -9,7 +9,12 @@ Go to the latest version under ``releases`` and download the latest ```NppLatexP
 
 ## **To get plugin DLLs by building manually:**
 
-1. Clone locally and open cmd in the relevant directory
+1. Clone locally and open cmd in the relevant directory, e.g.:
+
+```
+git clone https://github.com/cjcub3/npp-latex-preview.git C:\path\to\destination\folder\directory
+cd C:\path\to\destination\folder\directory
+```
 
 2. Run CMake (install if necessary):
 
