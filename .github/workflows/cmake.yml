@@ -32,18 +32,24 @@ jobs:
               Write-Host "No version pattern found."
           }
 
-      # CRITICAL SAFEGUARD: Cleans up the environment path specifically for MinGW
+      # FIX: Setting up MinGW reliably using MSYS2 UCRT64 (Modern Windows x64 toolchain)
       - name: Set up MinGW
-        uses: egor-tisin/setup-mingw@v2
+        uses: msys2/setup-msys2@v2
         with:
-          platform: x64
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-make
 
+      # Runs CMake compilation explicitly inside the configured MSYS2 shell environment
       - name: Configure CMake (MinGW)
+        shell: msys2 {0}
         run: cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
 
       - name: Build Project
+        shell: msys2 {0}
         run: cmake --build build --config Release
 
+      # Creates the release if the version string is matched
       - name: Create GitHub Release
         if: steps.check_msg.outputs.MATCH_FOUND == 'true'
         uses: softprops/action-gh-release@v2
