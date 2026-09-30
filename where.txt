@@ -1,3 +1,0 @@
-C:\MinGW\bin\gcc.exe
-C:\MinGW\bin\g++.exe
-C:\Program Files\CMake\bin\cmake.exe
