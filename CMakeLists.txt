@@ -22,6 +22,12 @@ set(WEBVIEW2_DLL
     "${WEBVIEW2_ROOT}/x64/WebView2Loader.dll"
 )
 
+# if(WIN32 AND MINGW)
+#     # Forces static linking of all runtime libraries globally
+#     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
+#     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static")
+# endif()
+
 add_library(NppLatexPreview SHARED
     src/PluginDefinition.cpp
     src/synctex_wrapper.cpp
@@ -56,10 +62,17 @@ target_include_directories(
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zlib"
 )
 
+# set(WINPTHREAD_STATIC
+#     "C:/mingw64/x86_64-w64-mingw32/lib/libwinpthread.a"
+# )
+
+#
+
 target_link_libraries(
     NppLatexPreview
     PRIVATE
         "${WEBVIEW2_LIB}"
+        #"${WINPTHREAD_STATIC}"
         ole32
         user32
         shlwapi
@@ -74,24 +87,24 @@ target_compile_definitions(
         NOMINMAX
 )
 
-# set_source_files_properties(
-#     third_party/synctex/synctex_parser.c
-#     third_party/synctex/synctex_parser_utils.c
-#     PROPERTIES
-#         COMPILE_DEFINITIONS
-#             "UNICODE=0;_UNICODE=0"
-# )
+target_compile_options(
+    NppLatexPreview
+    PRIVATE
+        -pthread
+)
 
-# Avoid requiring the MinGW C++ runtime DLLs to be present
-# beside Notepad++.
 target_link_options(
     NppLatexPreview
     PRIVATE
         -static-libgcc
         -static-libstdc++
-        -Wl,-Bstatic
-        -lwinpthread
-        -Wl,-Bdynamic
+        #-no-pthread
+        #-Wl,-Bstatic
+        #-lpthread
+        #-lwinpthread
+        #-Wl,-Bdynamic
+        -Wl,-t
+        -static
 )
 
 set_target_properties(
