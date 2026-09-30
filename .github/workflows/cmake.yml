@@ -1,0 +1,59 @@
+name: Windows x64 CMake DLL Build & Release
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Parse Commit Message for Version
+        id: check_msg
+        shell: pwsh
+        run: |
+          $msg = @"
+          ${{ github.event.head_commit.message }}
+          "@
+          if ($msg -match '\[v(\d+\.\d+\.\d+)\]') {
+              $version = $Matches[1]
+              echo "MATCH_FOUND=true" >> $env:GITHUB_OUTPUT
+              echo "VERSION=v$version" >> $env:GITHUB_OUTPUT
+              Write-Host "Found version pattern: v$version"
+          } else {
+              echo "MATCH_FOUND=false" >> $env:GITHUB_OUTPUT
+              Write-Host "No version pattern found."
+          }
+
+      # CRITICAL SAFEGUARD: Cleans up the environment path specifically for MinGW
+      - name: Set up MinGW
+        uses: egor-tisin/setup-mingw@v2
+        with:
+          platform: x64
+
+      - name: Configure CMake (MinGW)
+        run: cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Project
+        run: cmake --build build --config Release
+
+      - name: Create GitHub Release
+        if: steps.check_msg.outputs.MATCH_FOUND == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.check_msg.outputs.VERSION }}
+          name: ${{ steps.check_msg.outputs.VERSION }}
+          body: "" 
+          draft: false
+          prerelease: false
+          files: |
+            build/plugin/*.dll
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

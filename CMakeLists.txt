@@ -103,7 +103,7 @@ target_link_options(
         #-lpthread
         #-lwinpthread
         #-Wl,-Bdynamic
-        -Wl,-t
+        #-Wl,-t
         -static
 )
 
