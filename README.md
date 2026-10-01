@@ -17,14 +17,21 @@ cd C:\path\to\destination\folder\directory
 ```
 
 2. Run CMake (install if necessary):
+    - To compile with gcc
+    ```
+    cmake -S . -B build -G "MinGW Makefiles"
+    cmake --build build
+    ```
 
-```
-rmdir /s /q build
-cmake -S . -B build -G "MinGW Makefiles"
-cmake --build build
-```
+    - To compile with MSVC 2022
+    ```
+    cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+    cmake --build build --config Release
+    ```
 
-3. ```NppLatexPreview.dll``` and ```WebView2Loader.dll``` will be generated in build/plugin. Move them into Notepad++'s plugin folder under ```NppLatexPreview```, e.g. ```C:\Program Files\Notepad++\plugins\NppLatexPreview```
+    _Note: Requires existing gcc / MSVC 2022 Build Tools Installations. MSVC will produce a much smaller DLL._
+
+3. ```NppLatexPreview.dll``` and ```WebView2Loader.dll``` will be generated in ```build/plugin``` if using gcc and ```build/plugin/Release``` if using MSVC. Move them into Notepad++'s plugin folder under ```NppLatexPreview```, e.g. ```C:\Program Files\Notepad++\plugins\NppLatexPreview```
 
 ## **Basic Usage**
 
@@ -36,8 +43,5 @@ cmake --build build
     - **Show compile errors as message boxes**: Disabled by default. If enabled, in addition to showing information on the failed LaTeX compilation in the header, a message box will also appear with more detailed information.
 5. "Perform SyncTeX Forward Search" also exists as a plugin command. This makes it bindable in a keyboard shortcut or usable directly if one would like to jump to the page corresponding to the cursor line without compiling or enabling the setting.
 
-<<<<<<< HEAD
-Note: Current SyncTeX implementation is unstable. If the setting is enabled but Ctrl+Click does not register, try recompiling or restarting Notepad++. Behaviour for multi-file compilations, such as through ```\include``` and ```\input``` is untested.
-=======
-Note: Current SyncTeX implementation is unstable. If the setting is enabled but Ctrl+Click does not register, try recompiling or restarting Notepad++. Behaviour for multi-file compilations, such as through ```\include``` and ```\input``` is untested.
->>>>>>> 005c5bffcb174cbbb4156f02c8225f84aea504b0
+
+_Note: Current SyncTeX implementation is unstable. If the setting is enabled but Ctrl+Click does not register, try recompiling or restarting Notepad++. Behaviour for multi-file compilations, such as through ```\include``` and ```\input``` is untested._
