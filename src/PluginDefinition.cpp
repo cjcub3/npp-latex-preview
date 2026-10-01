@@ -2505,12 +2505,6 @@ static void compileWorker(
             CompileStatus::Success
         )
         {
-            // TEST ONLY ↓↓↓ (tests for PdfMissing error)
-            //if (std::filesystem::exists(pdfPath))
-            //{
-            //    std::filesystem::remove(pdfPath);
-            //}
-            // TEST ONLY ↑↑↑
 
             if (!std::filesystem::exists(pdfPath))
             {
@@ -3820,7 +3814,7 @@ static bool compileAndShowPreview()
     }
 
     updateCompileButton();
-    setPreviewStatus(L"⏳  Compiling...");
+    setPreviewStatus(L"\u231B  Compiling...");
     // -------------------------------------------------------------------------
     // Save current document.
     // -------------------------------------------------------------------------

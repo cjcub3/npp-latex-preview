@@ -7,7 +7,7 @@ on:
 jobs:
   build-and-release:
     runs-on: windows-latest
-    
+
     permissions:
       contents: write
 
@@ -22,6 +22,7 @@ jobs:
           $msg = @"
           ${{ github.event.head_commit.message }}
           "@
+
           if ($msg -match '\[v(\d+\.\d+\.\d+)\]') {
               $version = $Matches[1]
               echo "MATCH_FOUND=true" >> $env:GITHUB_OUTPUT
@@ -32,34 +33,26 @@ jobs:
               Write-Host "No version pattern found."
           }
 
-      # FIX: Setting up MinGW reliably using MSYS2 UCRT64 (Modern Windows x64 toolchain)
-      - name: Set up MinGW
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: true
-          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-make
-
-      # Runs CMake compilation explicitly inside the configured MSYS2 shell environment
-      - name: Configure CMake (MinGW)
-        shell: msys2 {0}
-        run: cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build `
+            -G "Visual Studio 17 2022" `
+            -A x64
 
       - name: Build Project
-        shell: msys2 {0}
-        run: cmake --build build --config Release
+        run: |
+          cmake --build build --config Release
 
-      # Creates the release if the version string is matched
       - name: Create GitHub Release
         if: steps.check_msg.outputs.MATCH_FOUND == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.check_msg.outputs.VERSION }}
           name: ${{ steps.check_msg.outputs.VERSION }}
-          body: "" 
+          body: ""
           draft: false
           prerelease: false
           files: |
-            build/plugin/*.dll
+            build/plugin/Release/*.dll
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

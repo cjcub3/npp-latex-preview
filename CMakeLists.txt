@@ -37,14 +37,14 @@ add_library(NppLatexPreview SHARED
 
     # zlib
     third_party/zlib/adler32.c
-    third_party/zlib/compress.c
+    #third_party/zlib/compress.c
     third_party/zlib/crc32.c
     third_party/zlib/deflate.c
     third_party/zlib/gzclose.c
     third_party/zlib/gzlib.c
     third_party/zlib/gzread.c
     third_party/zlib/gzwrite.c
-    third_party/zlib/infback.c
+    #third_party/zlib/infback.c
     third_party/zlib/inffast.c
     third_party/zlib/inflate.c
     third_party/zlib/inftrees.c
@@ -87,25 +87,43 @@ target_compile_definitions(
         NOMINMAX
 )
 
-target_compile_options(
-    NppLatexPreview
-    PRIVATE
-        -pthread
-)
+if(MSVC)
 
-target_link_options(
-    NppLatexPreview
-    PRIVATE
-        -static-libgcc
-        -static-libstdc++
-        #-no-pthread
-        #-Wl,-Bstatic
-        #-lpthread
-        #-lwinpthread
-        #-Wl,-Bdynamic
-        #-Wl,-t
-        -static
-)
+    target_compile_options(
+        NppLatexPreview
+        PRIVATE
+            /O1
+            /Gy
+            /Gw
+    )
+
+    target_link_options(
+        NppLatexPreview
+        PRIVATE
+            /OPT:REF
+            /OPT:ICF
+    )
+
+else()
+
+    target_compile_options(
+        NppLatexPreview
+        PRIVATE
+            -Os
+            -ffunction-sections
+            -fdata-sections
+    )
+
+    target_link_options(
+        NppLatexPreview
+        PRIVATE
+            -static-libgcc
+            -static-libstdc++
+            -Wl,--gc-sections
+            -s
+    )
+
+endif()
 
 set_target_properties(
     NppLatexPreview

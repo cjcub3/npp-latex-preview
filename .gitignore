@@ -5,6 +5,7 @@ bin/
 bin64/
 arm64/
 build/
+build-msvc/
 webview2_test/
 cloned_src/
 milestones.txt
